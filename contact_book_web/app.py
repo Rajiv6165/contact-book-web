@@ -16,11 +16,41 @@ app = Flask(
     static_url_path="/static"
 )
 
-# Database path setup
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'contacts.db')
+# Database and Config setup
+db_path = os.environ.get('DATABASE_URL') or os.environ.get('SQLITE_DB_PATH')
+if db_path:
+    if db_path.startswith('sqlite:///'):
+        app.config['SQLALCHEMY_DATABASE_URI'] = db_path
+    else:
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.abspath(db_path)
+else:
+    basedir = os.path.abspath(os.path.dirname(__file__))
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'contacts.db')
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'dev-card-catalog-secret-key-1892'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-card-catalog-secret-key-1892')
+
+# HTTP Basic Auth configuration
+BASIC_AUTH_USERNAME = os.environ.get('BASIC_AUTH_USERNAME')
+BASIC_AUTH_PASSWORD = os.environ.get('BASIC_AUTH_PASSWORD')
+
+@app.before_request
+def require_basic_auth():
+    # Bypass auth for health check route
+    if request.path == '/health':
+        return None
+        
+    # Enforce basic auth only if the credentials are set in the environment
+    if BASIC_AUTH_USERNAME and BASIC_AUTH_PASSWORD:
+        auth = request.authorization
+        if not auth or auth.username != BASIC_AUTH_USERNAME or auth.password != BASIC_AUTH_PASSWORD:
+            response = make_response(
+                jsonify({"errors": ["Unauthorized. Please provide valid Basic Auth credentials."]}),
+                401
+            )
+            response.headers['WWW-Authenticate'] = 'Basic realm="Login Required"'
+            return response
+    return None
 
 db = SQLAlchemy(app)
 
@@ -446,6 +476,10 @@ def import_contacts():
 @app.route('/', methods=['GET'])
 def index():
     return render_template("index.html")
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "healthy"}), 200
 
 # Global 404 fallback
 @app.errorhandler(404)

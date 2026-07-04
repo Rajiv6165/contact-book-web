@@ -143,5 +143,48 @@ class ContactBookTestCase(unittest.TestCase):
         self.assertEqual(contacts_data[0]['name'], 'Dave')
         self.assertTrue(contacts_data[0]['favorite'])
 
+    def test_health_check_bypasses_auth(self):
+        import app as app_module
+        app_module.BASIC_AUTH_USERNAME = 'testuser'
+        app_module.BASIC_AUTH_PASSWORD = 'testpassword'
+        
+        try:
+            response = self.client.get('/health')
+            self.assertEqual(response.status_code, 200)
+            data = json.loads(response.data)
+            self.assertEqual(data['status'], 'healthy')
+        finally:
+            app_module.BASIC_AUTH_USERNAME = None
+            app_module.BASIC_AUTH_PASSWORD = None
+
+    def test_basic_auth_required_when_configured(self):
+        import app as app_module
+        app_module.BASIC_AUTH_USERNAME = 'testuser'
+        app_module.BASIC_AUTH_PASSWORD = 'testpassword'
+        
+        try:
+            # Request without credentials (should return 401)
+            response = self.client.get('/api/contacts')
+            self.assertEqual(response.status_code, 401)
+            self.assertIn('WWW-Authenticate', response.headers)
+            
+            # Request with incorrect credentials (should return 401)
+            import base64
+            headers = {
+                'Authorization': 'Basic ' + base64.b64encode(b'wrong:credentials').decode('utf-8')
+            }
+            response = self.client.get('/api/contacts', headers=headers)
+            self.assertEqual(response.status_code, 401)
+            
+            # Request with correct credentials (should return 200)
+            headers = {
+                'Authorization': 'Basic ' + base64.b64encode(b'testuser:testpassword').decode('utf-8')
+            }
+            response = self.client.get('/api/contacts', headers=headers)
+            self.assertEqual(response.status_code, 200)
+        finally:
+            app_module.BASIC_AUTH_USERNAME = None
+            app_module.BASIC_AUTH_PASSWORD = None
+
 if __name__ == '__main__':
     unittest.main()

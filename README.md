@@ -182,8 +182,49 @@ All API payloads and response bodies exchange data in JSON format. Validation er
 
 ---
 
-## Known Limitations
-- **Single-User / Local Design**: Designed for single-user local access (SQLite & local file JSON databases). No user authentication, session tokens, or concurrent multi-user database transactions are implemented.
+## Known Limitations & Architecture
+- **Single-User / Local Design**: Designed for single-user local access (SQLite & local file JSON databases). No multi-user session management or dynamic database locking exists.
+- **HTTP Basic Authentication Stopgap**: The HTTP Basic Auth layer acts as a lightweight, single-user credential check to protect a personal catalog from public search engines and unauthorized access. It is an in-memory stopgap solution, not a proper multi-user role-based database auth system.
 - **Session-Only Theme State**: The active theme preference is kept in client application memory and reset upon reloading the page.
 - **Syncing CLI & Web Databases**: The one-time migration occurs on the initial boot of the Web app. Future updates in the CLI app `contacts.json` or Web app database `contacts.db` are kept independent and do not synchronize live.
+
+---
+
+## Deployment to Render
+
+To deploy the Contact Book Rolodex web application to **Render**, follow these step-by-step instructions:
+
+### 1. Create a Web Service on Render
+1. Connect your GitHub repository to your Render account.
+2. Click **New +** > **Web Service** in the Render Dashboard.
+3. Select your repository.
+4. Configure the service settings:
+   - **Name**: `contact-book-rolodex`
+   - **Environment**: `Python`
+   - **Root Directory**: `contact_book_web` (Important: this sets the workspace context to the subfolder containing `app.py`, `requirements.txt`, and the `Procfile`)
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn app:app`
+
+### 2. Attach a Persistent Disk (Volume)
+Since SQLite is a local file-based database, any new contacts added on Render will be lost on the next deploy or service restart unless we attach a persistent volume.
+1. Scroll down to the **Advanced** section or go to the **Disks** tab of your service.
+2. Click **Add Disk** or **Add Volume**:
+   - **Name**: `contacts-storage`
+   - **Mount Path**: `/data` (This is where the volume will be mounted on the container filesystem)
+   - **Size**: `1 GiB`
+
+### 3. Configure Environment Variables
+In the **Environment** tab, add the following variables:
+1. `SQLITE_DB_PATH`: `/data/contacts.db` (Points the application database to the persistent disk path)
+2. `SECRET_KEY`: `<generate-a-secure-random-string>` (For session security)
+3. `FLASK_DEBUG`: `False`
+4. `BASIC_AUTH_USERNAME`: `your-preferred-login-username` (Protects your catalog from unauthorized public access)
+5. `BASIC_AUTH_PASSWORD`: `your-secure-login-password`
+
+*(Note: Render automatically injects the `$PORT` environment variable, which Flask reads dynamically.)*
+
+### 4. Health Check Configuration
+1. Go to the **Advanced** section of your service settings.
+2. Set the **Health Check Path** to `/health`. Render will monitor this endpoint (which bypasses Basic Auth) to confirm your application booted correctly during deploys.
+
 
