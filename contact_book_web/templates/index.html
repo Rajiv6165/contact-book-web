@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Rolodex — Contact Catalog</title>
+    
+    <!-- Google Fonts: Special Elite (Typewriter), Inter (Sans-serif), JetBrains Mono (Monospace) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Special+Elite&display=swap" rel="stylesheet">
+    
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="rolodex-container">
+        
+        <!-- Cabinet Header -->
+        <header class="cabinet-header">
+            <div class="cabinet-brand">
+                <div class="drawer-handle"></div>
+                <h1 class="brand-title">Contact Card Index</h1>
+                <p class="brand-subtitle">Established 2026 • Cabinet No. 1</p>
+            </div>
+            
+            <div class="controls-row">
+                <!-- Search Bar -->
+                <div class="search-container">
+                    <span class="search-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    </span>
+                    <input type="text" id="search-input" placeholder="Search index cards (name, phone, email, address...)" aria-label="Search contacts" autocomplete="off">
+                    <button id="clear-search-btn" class="clear-btn" aria-label="Clear search" style="display: none;">&times;</button>
+                </div>
+                
+                <!-- Sort Actions -->
+                <div class="sort-actions">
+                    <span class="control-label">Sort:</span>
+                    <div class="sort-toggle-group" role="radiogroup" aria-label="Sort Order">
+                        <button type="button" id="sort-alpha" class="sort-btn active" role="radio" aria-checked="true" data-sort="name">
+                            <span>A–Z</span>
+                        </button>
+                        <button type="button" id="sort-recent" class="sort-btn" role="radio" aria-checked="false" data-sort="recent">
+                            <span>Recent</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Create Button -->
+                <button type="button" id="new-contact-btn" class="action-btn-primary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    <span>New Card</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="cabinet-workspace">
+            
+            <!-- A-Z Navigation Tab Rail -->
+            <nav class="alphabet-rail" aria-label="A to Z index tabs" id="alphabet-rail">
+                <!-- Letters will be dynamically active/inactive but always listed -->
+                <div class="alphabet-rail-inner" id="alphabet-list">
+                    <!-- Dynamic rendering in app.js -->
+                </div>
+            </nav>
+
+            <!-- Cards Grid Area -->
+            <section class="catalog-cards-section" aria-live="polite">
+                <div id="loading-state" class="loading-state" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Filing through drawer...</p>
+                </div>
+                
+                <div id="error-state" class="error-state" style="display: none;">
+                    <div class="error-badge">⚠️</div>
+                    <p id="error-message">Could not retrieve index cards.</p>
+                    <button id="retry-btn" class="retry-btn">Retry Lookup</button>
+                </div>
+                
+                <div id="empty-state" class="empty-state" style="display: none;">
+                    <div class="catalog-hole-illustration">
+                        <div class="guide-rod"></div>
+                    </div>
+                    <p class="empty-title">No cards on file yet.</p>
+                    <p class="empty-desc">Add your first contact to start the catalog.</p>
+                    <button id="empty-create-btn" class="action-btn-primary">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        <span>Insert First Card</span>
+                    </button>
+                </div>
+
+                <div id="no-results-state" class="empty-state" style="display: none;">
+                    <div class="search-fail-illustration">🔎</div>
+                    <p class="empty-title">No matching records.</p>
+                    <p class="empty-desc">No cards in the drawer match your search term. Try another query.</p>
+                </div>
+
+                <!-- The grid of cards -->
+                <div id="contacts-grid" class="contacts-grid">
+                    <!-- Dynamic contact cards go here -->
+                </div>
+            </section>
+        </main>
+        
+        <!-- Footer Info -->
+        <footer class="cabinet-footer">
+            <span id="contacts-count">Total cards: 0</span>
+            <span class="system-time">Cabinet System v2.0</span>
+        </footer>
+    </div>
+
+    <!-- Modals -->
+    <!-- Card Modal (Create / Edit) -->
+    <div id="card-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title" style="display: none;">
+        <div class="modal-card">
+            
+            <!-- Index Card Tab / Header inside Modal -->
+            <div class="modal-card-header">
+                <div class="index-card-tab">
+                    <span id="modal-tab-label">NEW ENTRY</span>
+                </div>
+                <button type="button" class="close-modal-btn" id="close-modal-btn" aria-label="Close form">&times;</button>
+            </div>
+            
+            <!-- Index Card Grid Lines Body -->
+            <form id="contact-form" class="modal-form" novalidate>
+                <input type="hidden" id="contact-id">
+                
+                <!-- Errors box -->
+                <div id="form-error-box" class="form-error-box" style="display: none;">
+                    <ul id="form-error-list"></ul>
+                </div>
+
+                <h2 id="modal-title" class="modal-main-heading">Catalog Card Form</h2>
+
+                <div class="form-group required">
+                    <label for="contact-name" class="form-label">Full Name</label>
+                    <input type="text" id="contact-name" name="name" class="form-input typewriter" required maxlength="120" placeholder="e.g. Samuel F. B. Morse" autocomplete="off">
+                    <span class="inline-error" id="error-name"></span>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="contact-phone" class="form-label">Phone Number</label>
+                        <input type="tel" id="contact-phone" name="phone" class="form-input monospace" maxlength="40" placeholder="e.g. +1 (555) 019-2834" autocomplete="off">
+                        <span class="inline-error" id="error-phone"></span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="contact-email" class="form-label">Email Address</label>
+                        <input type="email" id="contact-email" name="email" class="form-input monospace" maxlength="160" placeholder="e.g. s.morse@telegraph.org" autocomplete="off">
+                        <span class="inline-error" id="error-email"></span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="contact-address" class="form-label">Physical Address</label>
+                    <input type="text" id="contact-address" name="address" class="form-input" maxlength="300" placeholder="e.g. 14 Speedwell Ave, Morristown, NJ" autocomplete="off">
+                    <span class="inline-error" id="error-address"></span>
+                </div>
+
+                <div class="form-group">
+                    <label for="contact-notes" class="form-label">Memoranda / Notes</label>
+                    <textarea id="contact-notes" name="notes" class="form-input" rows="4" maxlength="2000" placeholder="Additional observations, details or correspondence details..."></textarea>
+                    <span class="inline-error" id="error-notes"></span>
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="contact-favorite" name="favorite">
+                        <span class="checkbox-custom"></span>
+                        <span class="checkbox-label">Pin Card (Mark as Favorite)</span>
+                    </label>
+                </div>
+                
+                <!-- Catalog Card Rod Hole -->
+                <div class="form-card-rod-hole">
+                    <span class="rod-hole-shadow"></span>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" id="cancel-form-btn" class="action-btn-secondary">Discard</button>
+                    <button type="submit" id="save-form-btn" class="action-btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal (Back-up fallback if inline card state isn't used, but we'll implement both beautifully) -->
+    <div id="confirm-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title" style="display: none;">
+        <div class="confirm-card">
+            <h3 id="confirm-title" class="confirm-heading">Destroy Catalog Card?</h3>
+            <p class="confirm-text">You are about to permanently purge the contact record for <strong id="confirm-contact-name">John Doe</strong> from the archives.</p>
+            <p class="confirm-warning">This action is irreversible.</p>
+            <div class="confirm-actions">
+                <button type="button" id="cancel-delete-btn" class="action-btn-secondary">Keep Card</button>
+                <button type="button" id="approve-delete-btn" class="action-btn-danger">Purge Record</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toast-container" class="toast-container" aria-live="assertive"></div>
+
+    <!-- Application Script -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

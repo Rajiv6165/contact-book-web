@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Alexander Graham Bell",
+    "phone": "555-1876",
+    "email": "alex.bell@telegraph.org",
+    "address": "Boston, MA"
+  },
+  {
+    "name": "Grace Hopper",
+    "phone": "555-1947",
+    "email": "grace.hopper@navy.mil",
+    "address": "Arlington, VA"
+  }
+]
