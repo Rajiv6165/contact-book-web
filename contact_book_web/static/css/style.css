@@ -1237,3 +1237,145 @@ body {
         animation: none;
     }
 }
+
+/* --- Added hardended components and After Hours theme --- */
+.actions-group {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.action-btn-outline {
+    background-color: transparent;
+    color: #F4EFE3;
+    border: 1px solid rgba(244, 239, 227, 0.4);
+    padding: 0.75rem 1.25rem;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    font-weight: 500;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: all 0.15s ease;
+}
+
+.action-btn-outline:hover {
+    background-color: rgba(244, 239, 227, 0.15);
+    border-color: #F4EFE3;
+}
+
+.action-btn-outline:active {
+    transform: translateY(1px);
+}
+
+.theme-toggle-btn {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(244, 239, 227, 0.2);
+    border-radius: 50%;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #F4EFE3;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.theme-toggle-btn:hover {
+    background-color: rgba(244, 239, 227, 0.15);
+    border-color: rgba(244, 239, 227, 0.5);
+    color: var(--tab-accent);
+    transform: translateY(-50%) scale(1.05);
+}
+
+/* After Hours Dark Theme Styles */
+[data-theme="dark"] {
+    --paper: #1B1511;           /* Deep dark walnut background */
+    --line: #3E3027;            /* Dark brown/border line */
+    --shadow: rgba(0, 0, 0, 0.3);
+    --shadow-deep: rgba(0, 0, 0, 0.5);
+    --tab-accent: #E0B550;      /* desaturated mustard for high contrast on dark */
+    --tab-accent-dark: #C69E42;
+}
+
+[data-theme="dark"] body {
+    background-color: #0F0B09;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                      linear-gradient(to bottom, #0F0B09, #080605);
+}
+
+[data-theme="dark"] .rolodex-container {
+    border-color: #2F241F;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+}
+
+[data-theme="dark"] .cabinet-header {
+    background-color: #17110E;
+    border-bottom: 3px solid #0F0B09;
+}
+
+[data-theme="dark"] .alphabet-rail {
+    background-color: #110D0A;
+    border-right-color: #241D17;
+    box-shadow: inset -5px 0 10px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .alpha-tab {
+    background-color: #201712;
+    border-color: #110D0A;
+    color: rgba(244, 239, 227, 0.25);
+}
+
+[data-theme="dark"] .alpha-tab.active-letter {
+    background-color: #4C3C30;
+    color: #F4EFE3;
+}
+
+[data-theme="dark"] .alpha-tab.active-letter:hover {
+    background-color: var(--tab-accent);
+    color: #17110E;
+}
+
+[data-theme="dark"] .alpha-tab.selected-filter {
+    background-color: var(--card); /* Remains cream index card theme */
+    color: var(--ink);
+    box-shadow: 2px 0 0 var(--card), 3px 2px 5px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .cabinet-footer {
+    background-color: #110D0A;
+    border-top-color: #080605;
+    color: #8C7866;
+}
+
+[data-theme="dark"] .control-label {
+    color: #8C7866;
+}
+
+[data-theme="dark"] .sort-btn:not(.active) {
+    color: #A29080;
+}
+
+[data-theme="dark"] .sort-btn:not(.active):hover {
+    color: #FFF;
+}
+
+[data-theme="dark"] .modal-overlay {
+    background-color: rgba(12, 9, 7, 0.75);
+}
+
+[data-theme="dark"] .modal-card-header {
+    background-color: #17110E;
+}
+
+[data-theme="dark"] .close-modal-btn:hover {
+    color: var(--tab-accent);
+}
+

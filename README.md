@@ -149,11 +149,41 @@ All API payloads and response bodies exchange data in JSON format. Validation er
 - **Route**: `POST /api/contacts/<id>/favorite`
 - **Response** (`200 OK`): Toggles the favorite status of the contact and returns the updated contact object.
 
+### 7. Export Contacts to CSV
+- **Route**: `GET /api/contacts/export`
+- **Response** (`200 OK`): Returns a downloadable CSV file named `contacts.csv` containing all contacts (sorted A-Z).
+  - **CSV Columns**: `name`, `phone`, `email`, `address`, `notes`, `favorite`, `created_at`, `updated_at`.
+
+### 8. Import Contacts from CSV
+- **Route**: `POST /api/contacts/import`
+- **Payload** (`multipart/form-data`): A CSV file upload.
+- **Behavior**: Parses row data and validates constraints.
+  - Automatically skips rows with duplicate contact names (case-insensitive) to prevent database collisions.
+  - Skips empty rows and logs other parsing warnings in the returned JSON.
+- **Response** (`200 OK`):
+  ```json
+  {
+    "imported": 12,
+    "skipped": 2,
+    "errors": ["Row 14 (Invalid Name): Name is required."]
+  }
+  ```
+
 ---
 
 ## Web App Layout & Rolodex Features
+- **After Hours / Reading Room Theme Toggle**: An icon toggle in the cabinet brand header switches between the light "Reading Room" theme and the dark walnut wood "After Hours" theme, persisting the setting in memory during the active session.
 - **A-Z Tab Rail**: Left-hand navigation divider tabs. Lists all letters. Letters that have active contact entries are clickable to filter the grid, while empty initials are disabled/muted.
 - **Search bar**: Lives at the top of the interface. Dynamically debounces keystrokes and searches fields instantly.
 - **Index-Card Tiles**: Renders contacts like physical cards inside a drawer, including a circular "punch hole" cut-out detail at the card bottom where drawer guide rods belong.
 - **Inline Card Purge Overlay**: Clicking delete prompts a slide-up confirmation banner directly on the card itself, avoiding modal fatigue and aligning with the catalog physical context.
-- **Save Notifications**: Fires subtle toast updates using active verbs (e.g. "Card inserted", "Changes saved", "Record purged").
+- **Notes Field Preview**: Surface contact memoranda/notes as a subtle, muted, smaller text snippet (first 60 characters with ellipsis `...` fallback) separated by a thin dashed divider below the address.
+- **Save Notifications**: Fires subtle toast updates using active verbs (e.g. "Card inserted", "Changes saved", "Record purged", "Imported 12 cards, skipped 2 duplicates").
+
+---
+
+## Known Limitations
+- **Single-User / Local Design**: Designed for single-user local access (SQLite & local file JSON databases). No user authentication, session tokens, or concurrent multi-user database transactions are implemented.
+- **Session-Only Theme State**: The active theme preference is kept in client application memory and reset upon reloading the page.
+- **Syncing CLI & Web Databases**: The one-time migration occurs on the initial boot of the Web app. Future updates in the CLI app `contacts.json` or Web app database `contacts.db` are kept independent and do not synchronize live.
+

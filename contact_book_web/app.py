@@ -1,8 +1,10 @@
 import os
 import re
 import json
+import csv
+import io
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, make_response
 
 # SQLAlchemy database import
 from flask_sqlalchemy import SQLAlchemy
@@ -304,6 +306,141 @@ def toggle_favorite(contact_id):
     db.session.commit()
     
     return jsonify(contact.to_dict())
+
+@app.route('/api/contacts/export', methods=['GET'])
+def export_contacts():
+    try:
+        contacts = Contact.query.order_by(db.func.lower(Contact.name).asc()).all()
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write headers
+        writer.writerow(['name', 'phone', 'email', 'address', 'notes', 'favorite', 'created_at', 'updated_at'])
+        
+        for c in contacts:
+            writer.writerow([
+                c.name,
+                c.phone or '',
+                c.email or '',
+                c.address or '',
+                c.notes or '',
+                'true' if c.favorite else 'false',
+                c.created_at.isoformat() if c.created_at else '',
+                c.updated_at.isoformat() if c.updated_at else ''
+            ])
+            
+        response = make_response(output.getvalue())
+        response.headers["Content-Disposition"] = "attachment; filename=contacts.csv"
+        response.headers["Content-Type"] = "text/csv"
+        return response
+    except Exception as e:
+        app.logger.error(f"CSV export error: {str(e)}")
+        return jsonify({"errors": [f"Export failed: {str(e)}"]}), 500
+
+@app.route('/api/contacts/import', methods=['POST'])
+def import_contacts():
+    if 'file' not in request.files:
+        return jsonify({"errors": ["No file part in the request."]}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"errors": ["No selected file."]}), 400
+        
+    if not file.filename.endswith('.csv'):
+        return jsonify({"errors": ["Invalid file type. Only CSV files are allowed."]}), 400
+
+    imported_count = 0
+    skipped_count = 0
+    errors = []
+
+    try:
+        stream = io.StringIO(file.stream.read().decode("utf-8-sig"), newline=None)
+        reader = csv.reader(stream)
+        
+        header = next(reader, None)
+        if not header:
+            return jsonify({"errors": ["Empty CSV file."]}), 400
+            
+        header_map = {col.strip().lower(): idx for idx, col in enumerate(header)}
+        
+        if 'name' not in header_map:
+            return jsonify({"errors": ["CSV file must contain a 'name' column."]}), 400
+
+        for row_idx, row in enumerate(reader, start=2):
+            if not row or all(val.strip() == '' for val in row):
+                continue
+                
+            def get_val(col_name):
+                idx = header_map.get(col_name)
+                if idx is not None and idx < len(row):
+                    return row[idx].strip()
+                return ''
+
+            name = get_val('name')
+            if not name:
+                errors.append(f"Row {row_idx}: Name is required.")
+                continue
+
+            if len(name) > 120:
+                errors.append(f"Row {row_idx} ({name}): Name exceeds 120 characters.")
+                continue
+
+            existing = Contact.query.filter(db.func.lower(Contact.name) == name.lower()).first()
+            if existing:
+                skipped_count += 1
+                continue
+
+            phone = get_val('phone')
+            if phone and len(phone) > 40:
+                errors.append(f"Row {row_idx} ({name}): Phone number exceeds 40 characters.")
+                continue
+            if phone and not validate_phone(phone):
+                errors.append(f"Row {row_idx} ({name}): Phone number format is invalid.")
+                continue
+
+            email = get_val('email')
+            if email and len(email) > 160:
+                errors.append(f"Row {row_idx} ({name}): Email address exceeds 160 characters.")
+                continue
+            if email and not validate_email(email):
+                errors.append(f"Row {row_idx} ({name}): Email address format is invalid.")
+                continue
+
+            address = get_val('address')
+            if address and len(address) > 300:
+                errors.append(f"Row {row_idx} ({name}): Address exceeds 300 characters.")
+                continue
+
+            notes = get_val('notes')
+            if notes and len(notes) > 2000:
+                errors.append(f"Row {row_idx} ({name}): Notes exceed 2000 characters.")
+                continue
+
+            fav_val = get_val('favorite').lower()
+            favorite = fav_val in ['1', 'true', 'yes', 'y']
+
+            new_contact = Contact(
+                name=name,
+                phone=phone if phone else None,
+                email=email if email else None,
+                address=address if address else None,
+                notes=notes if notes else None,
+                favorite=favorite
+            )
+            db.session.add(new_contact)
+            imported_count += 1
+            
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"errors": [f"Failed to process CSV file: {str(e)}"]}), 500
+
+    return jsonify({
+        "imported": imported_count,
+        "skipped": skipped_count,
+        "errors": errors
+    })
 
 # Serving SPA
 @app.route('/', methods=['GET'])

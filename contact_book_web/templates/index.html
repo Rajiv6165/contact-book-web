@@ -22,6 +22,9 @@
                 <div class="drawer-handle"></div>
                 <h1 class="brand-title">Contact Card Index</h1>
                 <p class="brand-subtitle">Established 2026 • Cabinet No. 1</p>
+                <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" aria-label="Toggle After Hours Dark Theme">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                </button>
             </div>
             
             <div class="controls-row">
@@ -47,11 +50,22 @@
                     </div>
                 </div>
 
-                <!-- Create Button -->
-                <button type="button" id="new-contact-btn" class="action-btn-primary">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                    <span>New Card</span>
-                </button>
+                <!-- Actions Group -->
+                <div class="actions-group">
+                    <input type="file" id="import-csv-file" accept=".csv" style="display: none;">
+                    <button type="button" id="import-csv-btn" class="action-btn-outline" aria-label="Import contacts from CSV">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <span>Import CSV</span>
+                    </button>
+                    <button type="button" id="export-csv-btn" class="action-btn-outline" aria-label="Export contacts to CSV">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        <span>Export CSV</span>
+                    </button>
+                    <button type="button" id="new-contact-btn" class="action-btn-primary">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        <span>New Card</span>
+                    </button>
+                </div>
             </div>
         </header>
 
