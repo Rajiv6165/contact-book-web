@@ -1270,11 +1270,17 @@ body {
     transform: translateY(1px);
 }
 
-.theme-toggle-btn {
+.header-actions {
     position: absolute;
     right: 0;
     top: 50%;
     transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.theme-toggle-btn {
     background-color: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(244, 239, 227, 0.2);
     border-radius: 50%;
@@ -1292,7 +1298,28 @@ body {
     background-color: rgba(244, 239, 227, 0.15);
     border-color: rgba(244, 239, 227, 0.5);
     color: var(--tab-accent);
-    transform: translateY(-50%) scale(1.05);
+    transform: scale(1.05);
+}
+
+.logout-btn {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(244, 239, 227, 0.2);
+    border-radius: 50%;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #F4EFE3;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.logout-btn:hover {
+    background-color: rgba(244, 239, 227, 0.15);
+    border-color: rgba(244, 239, 227, 0.5);
+    color: var(--danger);
+    transform: scale(1.05);
 }
 
 /* After Hours Dark Theme Styles */

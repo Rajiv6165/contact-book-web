@@ -25,12 +25,23 @@ On the first run of the Web App, it automatically performs a **one-time migratio
 
 ## Data Model (Web Database)
 
-The database schema of the `contacts` table in `contacts.db` comprises:
+The database schema contains two tables: `users` and `contacts` in `contacts.db`:
 
+### `users` Table
 | Column Name | Data Type | Constraint | Description |
 |---|---|---|---|
 | `id` | Integer | Primary Key, Autoincrement | Unique identifier |
-| `name` | String(120) | Required, Case-insensitive Unique | Contact's full name |
+| `username` | String(80) | Unique, Not Null | Unique username for log in |
+| `email` | String(120) | Unique, Not Null | Unique email address |
+| `password_hash` | String(200) | Not Null | PBKDF2 password hash |
+| `created_at` | DateTime | Auto-managed, UTC | Account creation timestamp |
+
+### `contacts` Table
+| Column Name | Data Type | Constraint | Description |
+|---|---|---|---|
+| `id` | Integer | Primary Key, Autoincrement | Unique identifier |
+| `user_id` | Integer | Foreign Key to `users.id` | Owner of the contact |
+| `name` | String(120) | Required, Case-insensitive Unique per user | Contact's full name |
 | `phone` | String(40) | Optional, Loose Format Validation | Telephone number |
 | `email` | String(160) | Optional, Basic Email Validation | Email address |
 | `address` | String(300) | Optional | Physical address |
@@ -183,8 +194,9 @@ All API payloads and response bodies exchange data in JSON format. Validation er
 ---
 
 ## Known Limitations & Architecture
-- **Single-User / Local Design**: Designed for single-user local access (SQLite & local file JSON databases). No multi-user session management or dynamic database locking exists.
-- **HTTP Basic Authentication Stopgap**: The HTTP Basic Auth layer acts as a lightweight, single-user credential check to protect a personal catalog from public search engines and unauthorized access. It is an in-memory stopgap solution, not a proper multi-user role-based database auth system.
+- **Multi-User Accounts**: Multi-user account isolation is supported. Each user has their own independent deck of contacts.
+- **SaaS Known Limitations (Disclaimer)**: This application is intended for a small number of trusted librarians/users. There is no email verification, no password reset flow, and no self-service password retrieval mechanisms. Do not deploy as a public SaaS without adding these components.
+- **First-Run Migration**: On first boot, if there are existing contacts with no owner, they are migrated to a default user generated from the legacy `BASIC_AUTH_USERNAME` and `BASIC_AUTH_PASSWORD` environment variables (or fallbacks if unset).
 - **Session-Only Theme State**: The active theme preference is kept in client application memory and reset upon reloading the page.
 - **Syncing CLI & Web Databases**: The one-time migration occurs on the initial boot of the Web app. Future updates in the CLI app `contacts.json` or Web app database `contacts.db` are kept independent and do not synchronize live.
 
@@ -218,8 +230,8 @@ In the **Environment** tab, add the following variables:
 1. `SQLITE_DB_PATH`: `/data/contacts.db` (Points the application database to the persistent disk path)
 2. `SECRET_KEY`: `<generate-a-secure-random-string>` (For session security)
 3. `FLASK_DEBUG`: `False`
-4. `BASIC_AUTH_USERNAME`: `your-preferred-login-username` (Protects your catalog from unauthorized public access)
-5. `BASIC_AUTH_PASSWORD`: `your-secure-login-password`
+4. `BASIC_AUTH_USERNAME`: `admin` (Optional legacy configuration, used only for the first-run orphaned contacts migration)
+5. `BASIC_AUTH_PASSWORD`: `adminpassword` (Optional legacy configuration, used only for the first-run orphaned contacts migration)
 
 *(Note: Render automatically injects the `$PORT` environment variable, which Flask reads dynamically.)*
 

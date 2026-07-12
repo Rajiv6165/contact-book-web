@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Rolodex — Librarian Login</title>
+    
+    <!-- Google Fonts: Special Elite (Typewriter), Inter (Sans-serif), JetBrains Mono (Monospace) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Special+Elite&display=swap" rel="stylesheet">
+    
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .auth-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 90vh;
+            width: 100%;
+        }
+        .library-card {
+            background-color: var(--card);
+            width: 100%;
+            max-width: 460px;
+            border-radius: 4px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+            border: 1px solid var(--line);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            animation: cardIn 0.3s ease-out forwards;
+        }
+        @keyframes cardIn {
+            from { transform: translateY(15px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .library-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            background-color: #3C3026;
+            border-radius: 3px 3px 0 0;
+            position: relative;
+            padding-top: 15px;
+        }
+        .library-card-tab {
+            background-color: var(--card);
+            border-top: 1px solid var(--line);
+            border-left: 1px solid var(--line);
+            border-right: 1px solid var(--line);
+            padding: 6px 16px;
+            border-radius: 6px 6px 0 0;
+            font-family: var(--font-code);
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--ink);
+            margin-left: 20px;
+            position: relative;
+            bottom: -1px;
+            z-index: 1;
+        }
+        .library-card-body {
+            padding: 2.5rem 2rem 2rem 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            position: relative;
+        }
+        .library-card-title {
+            font-family: var(--font-display);
+            font-weight: normal;
+            font-size: 1.6rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 2px solid var(--line-red);
+            padding-bottom: 0.5rem;
+            color: var(--ink);
+            text-align: center;
+        }
+        .library-card-subtitle {
+            font-size: 0.85rem;
+            color: var(--ink-muted);
+            text-align: center;
+            margin-top: -0.5rem;
+            margin-bottom: 0.5rem;
+            font-family: var(--font-body);
+        }
+        .auth-footer-text {
+            font-size: 0.85rem;
+            color: var(--ink-muted);
+            text-align: center;
+            margin-top: 1rem;
+        }
+        .auth-footer-text a {
+            color: var(--tab-accent-dark);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .auth-footer-text a:hover {
+            text-decoration: underline;
+        }
+        .card-rod-hole-container {
+            margin-top: 0.5rem;
+        }
+        .notification-box {
+            border-radius: 4px;
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+        }
+        .notification-box.error {
+            background-color: rgba(162, 59, 46, 0.08);
+            border: 1px solid rgba(162, 59, 46, 0.2);
+            color: var(--danger);
+        }
+        .notification-box.success {
+            background-color: rgba(43, 58, 46, 0.08);
+            border: 1px solid rgba(43, 58, 46, 0.2);
+            color: var(--ink);
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-container">
+        <div class="library-card">
+            <!-- Protruding Tab -->
+            <div class="library-card-header">
+                <div class="library-card-tab">
+                    <span>MEMBER IN</span>
+                </div>
+            </div>
+            
+            <div class="library-card-body">
+                <h2 class="library-card-title">Library Card Sign-In</h2>
+                <p class="library-card-subtitle">Verify credentials to open the drawer</p>
+                
+                {% if error %}
+                <div class="notification-box error">
+                    {{ error }}
+                </div>
+                {% endif %}
+
+                {% if request.args.get('registered') %}
+                <div class="notification-box success">
+                    Account created successfully! Please log in below.
+                </div>
+                {% endif %}
+                
+                <form action="/login" method="POST" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <div class="form-group required">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" id="username" name="username" class="form-input typewriter" required placeholder="e.g. jdoe" autocomplete="username">
+                    </div>
+                    
+                    <div class="form-group required">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" id="password" name="password" class="form-input monospace" required placeholder="••••••••" autocomplete="current-password">
+                    </div>
+                    
+                    <div class="form-actions" style="margin-top: 1rem;">
+                        <button type="submit" class="action-btn-primary" style="width: 100%; justify-content: center;">Sign In</button>
+                    </div>
+                </form>
+                
+                <p class="auth-footer-text">
+                    Need a new card? <a href="/register">Apply for membership</a>
+                </p>
+                
+                <!-- Rod Hole -->
+                <div class="form-card-rod-hole card-rod-hole-container">
+                    <span class="rod-hole-shadow"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

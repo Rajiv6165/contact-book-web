@@ -4,10 +4,11 @@ import json
 import csv
 import io
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, render_template, make_response
+from flask import Flask, request, jsonify, render_template, make_response, redirect, url_for, session, g
 
 # SQLAlchemy database import
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(
     __name__,
@@ -30,35 +31,26 @@ else:
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-card-catalog-secret-key-1892')
 
-# HTTP Basic Auth configuration
-BASIC_AUTH_USERNAME = os.environ.get('BASIC_AUTH_USERNAME')
-BASIC_AUTH_PASSWORD = os.environ.get('BASIC_AUTH_PASSWORD')
-
-@app.before_request
-def require_basic_auth():
-    # Bypass auth for health check route
-    if request.path == '/health':
-        return None
-        
-    # Enforce basic auth only if the credentials are set in the environment
-    if BASIC_AUTH_USERNAME and BASIC_AUTH_PASSWORD:
-        auth = request.authorization
-        if not auth or auth.username != BASIC_AUTH_USERNAME or auth.password != BASIC_AUTH_PASSWORD:
-            response = make_response(
-                jsonify({"errors": ["Unauthorized. Please provide valid Basic Auth credentials."]}),
-                401
-            )
-            response.headers['WWW-Authenticate'] = 'Basic realm="Login Required"'
-            return response
-    return None
-
 db = SQLAlchemy(app)
 
-# Database Model
+# Database Models
+class User(db.Model):
+    __tablename__ = 'users'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    contacts = db.relationship('Contact', backref='user', lazy=True)
+
+
 class Contact(db.Model):
     __tablename__ = 'contacts'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     phone = db.Column(db.String(40), nullable=True)
     email = db.Column(db.String(160), nullable=True)
@@ -71,6 +63,7 @@ class Contact(db.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'user_id': self.user_id,
             'name': self.name,
             'phone': self.phone or '',
             'email': self.email or '',
@@ -143,51 +136,190 @@ def validate_contact_data(data, is_patch=False):
 
     return errors
 
+# Dynamic Schema Migration Helper
+def migrate_database_schema():
+    try:
+        inspector = db.inspect(db.engine)
+        columns = [c['name'] for c in inspector.get_columns('contacts')]
+        if 'user_id' not in columns:
+            app.logger.info("Schema migration: Adding user_id column to contacts table.")
+            with db.engine.begin() as conn:
+                conn.execute(db.text("ALTER TABLE contacts ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+    except Exception as e:
+        app.logger.error(f"Error during schema migration: {e}")
+
 # One-time migration function
 def migrate_if_needed():
     try:
+        basedir = os.path.abspath(os.path.dirname(__file__))
+        
+        # Check if we have contacts to import from JSON (if DB is completely empty)
+        has_json_contacts = False
+        json_contacts_data = []
         if Contact.query.count() == 0:
-            # Check standard path locations for CLI's contacts.json
             parent_json = os.path.join(basedir, '..', 'contacts.json')
             local_json = os.path.join(basedir, 'contacts.json')
             
-            json_path = None
-            if os.path.exists(parent_json):
-                json_path = parent_json
-            elif os.path.exists(local_json):
-                json_path = local_json
-                
+            json_path = parent_json if os.path.exists(parent_json) else (local_json if os.path.exists(local_json) else None)
             if json_path:
-                app.logger.info(f"Empty database detected. Starting one-time migration from {json_path}")
                 with open(json_path, 'r', encoding='utf-8') as f:
-                    contacts_data = json.load(f)
-                    if isinstance(contacts_data, list):
-                        for item in contacts_data:
-                            name = item.get('name', '').strip()
-                            if not name:
-                                continue
-                            
-                            # Check duplicates before importing
-                            existing = Contact.query.filter(db.func.lower(Contact.name) == name.lower()).first()
-                            if existing:
-                                continue
-                            
-                            phone = item.get('phone', '').strip()
-                            email = item.get('email', '').strip()
-                            address = item.get('address', '').strip()
-                            
-                            contact = Contact(
-                                name=name,
-                                phone=phone if phone else None,
-                                email=email if email else None,
-                                address=address if address else None,
-                                favorite=False
-                            )
-                            db.session.add(contact)
-                        db.session.commit()
-                        app.logger.info("Data migration completed successfully.")
+                    json_contacts_data = json.load(f)
+                    if isinstance(json_contacts_data, list) and len(json_contacts_data) > 0:
+                        has_json_contacts = True
+
+        # Check if there are any orphaned contacts (user_id is NULL)
+        orphaned_contacts = Contact.query.filter(Contact.user_id.is_(None)).all()
+
+        if orphaned_contacts or has_json_contacts:
+            # We need to find or create the default user to assign contacts to
+            default_user = User.query.first()
+            if not default_user:
+                username = os.environ.get('BASIC_AUTH_USERNAME') or 'admin'
+                password = os.environ.get('BASIC_AUTH_PASSWORD') or 'adminpassword'
+                email = f"{username}@example.com"
+                
+                default_user = User(
+                    username=username,
+                    email=email,
+                    password_hash=generate_password_hash(password)
+                )
+                db.session.add(default_user)
+                db.session.commit()
+                app.logger.info(f"Created default migration user: {username}")
+                
+            # Assign orphaned contacts to the default user
+            if orphaned_contacts:
+                for contact in orphaned_contacts:
+                    contact.user_id = default_user.id
+                db.session.commit()
+                app.logger.info(f"Assigned {len(orphaned_contacts)} orphaned contacts to user '{default_user.username}'.")
+                
+            # Import JSON contacts if database was empty
+            if has_json_contacts:
+                app.logger.info("Empty database detected. Seeding contacts from JSON.")
+                for item in json_contacts_data:
+                    name = item.get('name', '').strip()
+                    if not name:
+                        continue
+                    
+                    # Duplicate check for this user
+                    existing = Contact.query.filter_by(user_id=default_user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
+                    if existing:
+                        continue
+                    
+                    phone = item.get('phone', '').strip()
+                    email = item.get('email', '').strip()
+                    address = item.get('address', '').strip()
+                    
+                    contact = Contact(
+                        name=name,
+                        phone=phone if phone else None,
+                        email=email if email else None,
+                        address=address if address else None,
+                        favorite=False,
+                        user_id=default_user.id
+                    )
+                    db.session.add(contact)
+                db.session.commit()
+                app.logger.info("JSON seed completed successfully.")
     except Exception as e:
         app.logger.error(f"Migration error occurred: {str(e)}")
+
+# Authentication Enforcement Hook
+@app.before_request
+def require_login():
+    if request.path == '/health':
+        return None
+    if request.path.startswith('/static/'):
+        return None
+    if request.path in ('/login', '/register'):
+        return None
+        
+    user_id = session.get('user_id')
+    g.user = None
+    if user_id:
+        g.user = db.session.get(User, user_id)
+        
+    if g.user is None:
+        if request.path.startswith('/api/'):
+            return jsonify({"errors": ["Unauthorized. Please login."]}), 401
+        return redirect(url_for('login'))
+    return None
+
+# Auth Routes
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if session.get('user_id') and db.session.get(User, session.get('user_id')):
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        
+        errors = []
+        if not username:
+            errors.append("Username is required.")
+        if not email:
+            errors.append("Email is required.")
+        elif not validate_email(email):
+            errors.append("Invalid email address format.")
+        if not password:
+            errors.append("Password is required.")
+        elif len(password) < 8:
+            errors.append("Password must be at least 8 characters long.")
+        if password != confirm_password:
+            errors.append("Passwords do not match.")
+            
+        if not errors:
+            existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
+            if existing_user:
+                if existing_user.username == username:
+                    errors.append("Username is already taken.")
+                if existing_user.email == email:
+                    errors.append("Email is already registered.")
+                    
+        if errors:
+            return render_template('register.html', errors=errors, username=username, email=email)
+            
+        new_user = User(
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password)
+        )
+        db.session.add(new_user)
+        db.session.commit()
+        
+        return redirect(url_for('login', registered='true'))
+        
+    return render_template('register.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if session.get('user_id') and db.session.get(User, session.get('user_id')):
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
+            session['user_id'] = user.id
+            return redirect(url_for('index'))
+            
+        return render_template('login.html', error="Invalid username or password.")
+        
+    return render_template('login.html')
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)
+    return redirect(url_for('login'))
+
 
 # API Routes
 @app.route('/api/contacts', methods=['GET'])
@@ -195,8 +327,8 @@ def get_contacts():
     query_param = request.args.get('q', '').strip()
     sort_param = request.args.get('sort', 'name').strip()
 
-    # Query builder
-    query = Contact.query
+    # Query builder - scope by current user
+    query = Contact.query.filter_by(user_id=g.user.id)
 
     # Apply search filter across name, phone, email, address (case-insensitive)
     if query_param:
@@ -217,8 +349,8 @@ def get_contacts():
 
     filtered_contacts = query.all()
     
-    # Calculate list of uppercase letters having contacts in database overall
-    all_contacts = Contact.query.all()
+    # Calculate list of uppercase letters having contacts in database overall for the user
+    all_contacts = Contact.query.filter_by(user_id=g.user.id).all()
     initials = sorted(list(set(c.name[0].upper() for c in all_contacts if c.name)))
 
     return jsonify({
@@ -237,8 +369,8 @@ def create_contact():
 
     name = data.get('name', '').strip()
     
-    # Duplicate name check (case-insensitive)
-    existing = Contact.query.filter(db.func.lower(Contact.name) == name.lower()).first()
+    # Duplicate name check for this user (case-insensitive)
+    existing = Contact.query.filter_by(user_id=g.user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
     if existing:
         return jsonify({"errors": [f"A contact with the name '{name}' already exists."]}), 409
 
@@ -254,7 +386,8 @@ def create_contact():
         email=email or None,
         address=address or None,
         notes=notes or None,
-        favorite=favorite
+        favorite=favorite,
+        user_id=g.user.id
     )
 
     db.session.add(new_contact)
@@ -264,14 +397,14 @@ def create_contact():
 
 @app.route('/api/contacts/<int:contact_id>', methods=['GET'])
 def get_contact(contact_id):
-    contact = db.session.get(Contact, contact_id)
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
     return jsonify(contact.to_dict())
 
 @app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'PATCH'])
 def update_contact(contact_id):
-    contact = db.session.get(Contact, contact_id)
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
 
@@ -285,7 +418,11 @@ def update_contact(contact_id):
     # If updating name, check duplicates (excluding current contact)
     if 'name' in data:
         name = data.get('name', '').strip()
-        existing = Contact.query.filter(db.func.lower(Contact.name) == name.lower(), Contact.id != contact_id).first()
+        existing = Contact.query.filter(
+            Contact.user_id == g.user.id,
+            db.func.lower(Contact.name) == name.lower(),
+            Contact.id != contact_id
+        ).first()
         if existing:
             return jsonify({"errors": [f"A contact with the name '{name}' already exists."]}), 409
         contact.name = name
@@ -317,7 +454,7 @@ def update_contact(contact_id):
 
 @app.route('/api/contacts/<int:contact_id>', methods=['DELETE'])
 def delete_contact(contact_id):
-    contact = db.session.get(Contact, contact_id)
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
     
@@ -327,7 +464,7 @@ def delete_contact(contact_id):
 
 @app.route('/api/contacts/<int:contact_id>/favorite', methods=['POST'])
 def toggle_favorite(contact_id):
-    contact = db.session.get(Contact, contact_id)
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
         
@@ -340,7 +477,7 @@ def toggle_favorite(contact_id):
 @app.route('/api/contacts/export', methods=['GET'])
 def export_contacts():
     try:
-        contacts = Contact.query.order_by(db.func.lower(Contact.name).asc()).all()
+        contacts = Contact.query.filter_by(user_id=g.user.id).order_by(db.func.lower(Contact.name).asc()).all()
         
         output = io.StringIO()
         writer = csv.writer(output)
@@ -416,7 +553,7 @@ def import_contacts():
                 errors.append(f"Row {row_idx} ({name}): Name exceeds 120 characters.")
                 continue
 
-            existing = Contact.query.filter(db.func.lower(Contact.name) == name.lower()).first()
+            existing = Contact.query.filter_by(user_id=g.user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
             if existing:
                 skipped_count += 1
                 continue
@@ -456,7 +593,8 @@ def import_contacts():
                 email=email if email else None,
                 address=address if address else None,
                 notes=notes if notes else None,
-                favorite=favorite
+                favorite=favorite,
+                user_id=g.user.id
             )
             db.session.add(new_contact)
             imported_count += 1
@@ -492,6 +630,7 @@ def handle_404(e):
 # Initialize database and seed migrations
 with app.app_context():
     db.create_all()
+    migrate_database_schema()
     migrate_if_needed()
 
 if __name__ == '__main__':
