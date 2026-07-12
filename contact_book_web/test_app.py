@@ -3,6 +3,8 @@ import sys
 import unittest
 import json
 import io
+from datetime import datetime, timezone, timedelta
+from PIL import Image
 
 # Ensure the contact_book_web directory is on the path
 sys.path.append(os.path.dirname(__file__))
@@ -380,7 +382,7 @@ class ContactBookTestCase(unittest.TestCase):
         response = client_b.post('/api/contacts/bulk-delete', json=payload)
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.data)
-        self.assertIn("Successfully deleted 1 contacts.", data['message']) # only c3 deleted
+        self.assertIn("Successfully moved 1 contacts to Trash.", data['message']) # only c3 soft deleted
         
         # Verify c1 still exists for User A
         response_a = self.client.get(f'/api/contacts/{c1["id"]}')
@@ -525,10 +527,144 @@ class ContactBookTestCase(unittest.TestCase):
         saved_path2 = os.path.join(AVATAR_UPLOAD_FOLDER, filename2)
         self.assertTrue(os.path.exists(saved_path2))
 
-        # Test 5: Delete contact and confirm file is deleted
-        delete_response = self.client.delete(f'/api/contacts/{c_id}')
+        # Test 5: Delete contact (soft delete) should keep the file, but permanent delete should purge it
+        soft_delete_response = self.client.delete(f'/api/contacts/{c_id}')
+        self.assertEqual(soft_delete_response.status_code, 200)
+        self.assertTrue(os.path.exists(saved_path2)) # file still exists because soft deleted
+        
+        # Permanent delete
+        delete_response = self.client.delete(f'/api/contacts/{c_id}/permanent')
         self.assertEqual(delete_response.status_code, 200)
-        self.assertFalse(os.path.exists(saved_path2))
+        self.assertFalse(os.path.exists(saved_path2)) # file is now purged
+
+    def test_soft_delete_and_restore(self):
+        # Create contact
+        contact_json = self.client.post('/api/contacts', json={"name": "Soft Delete Target"}).get_json()
+        c_id = contact_json['id']
+        
+        # Soft delete
+        response = self.client.delete(f'/api/contacts/{c_id}')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertEqual(data['message'], "Contact moved to Trash.")
+        
+        # Verify excluded from main list
+        response_list = self.client.get('/api/contacts')
+        self.assertEqual(response_list.status_code, 200)
+        list_data = json.loads(response_list.data)
+        self.assertEqual(list_data['total_count'], 0)
+        self.assertEqual(list_data['trash_count'], 1)
+        
+        # Verify visible in trash list
+        response_trash = self.client.get('/api/contacts/trash')
+        self.assertEqual(response_trash.status_code, 200)
+        trash_data = json.loads(response_trash.data)
+        self.assertEqual(trash_data['total_count'], 1)
+        self.assertEqual(trash_data['contacts'][0]['name'], "Soft Delete Target")
+        
+        # Restore
+        response_restore = self.client.post(f'/api/contacts/{c_id}/restore')
+        self.assertEqual(response_restore.status_code, 200)
+        
+        # Verify restored to main list
+        response_list2 = self.client.get('/api/contacts')
+        self.assertEqual(response_list2.status_code, 200)
+        self.assertEqual(json.loads(response_list2.data)['total_count'], 1)
+
+    def test_permanent_delete_and_file_cleanup(self):
+        # Create contact and upload avatar
+        contact_json = self.client.post('/api/contacts', json={"name": "Perm Target"}).get_json()
+        c_id = contact_json['id']
+        
+        img_io = io.BytesIO()
+        img = Image.new('RGB', (10, 10), color='red')
+        img.save(img_io, 'PNG')
+        img_io.seek(0)
+        
+        self.client.post(
+            f'/api/contacts/{c_id}/avatar',
+            data={'file': (img_io, "valid.png")},
+            content_type='multipart/form-data'
+        )
+        
+        contact_updated = self.client.get(f'/api/contacts/{c_id}').get_json()
+        avatar_url = contact_updated['avatar_url']
+        
+        from app import AVATAR_UPLOAD_FOLDER
+        filename = avatar_url.split('/')[-1]
+        saved_path = os.path.join(AVATAR_UPLOAD_FOLDER, filename)
+        self.assertTrue(os.path.exists(saved_path))
+        
+        # Soft delete first
+        self.client.delete(f'/api/contacts/{c_id}')
+        
+        # Permanent delete
+        response_perm = self.client.delete(f'/api/contacts/{c_id}/permanent')
+        self.assertEqual(response_perm.status_code, 200)
+        
+        # Check database is clean
+        with app.app_context():
+            self.assertIsNone(db.session.get(Contact, c_id))
+            
+        # Check disk file is cleaned up
+        self.assertFalse(os.path.exists(saved_path))
+
+    def test_auto_purge_30_days(self):
+        # Create contact
+        contact_json = self.client.post('/api/contacts', json={"name": "Old Trash"}).get_json()
+        c_id = contact_json['id']
+        
+        # Soft delete it
+        self.client.delete(f'/api/contacts/{c_id}')
+        
+        # Manipulate deleted_at timestamp in database to be 31 days ago
+        with app.app_context():
+            from datetime import timedelta
+            contact_db = db.session.get(Contact, c_id)
+            contact_db.deleted_at = datetime.now(timezone.utc) - timedelta(days=31)
+            db.session.commit()
+            
+        # Trigger auto purge function
+        from app import purge_old_deleted_contacts
+        purge_old_deleted_contacts()
+        
+        # Verify contact is completely deleted
+        with app.app_context():
+            self.assertIsNone(db.session.get(Contact, c_id))
+
+    def test_vcard_export(self):
+        # Create contact
+        contact_json = self.client.post(
+            '/api/contacts',
+            json={
+                "name": "vCard User",
+                "phone": "+1 (555) 999-8888",
+                "email": "vcard@example.com",
+                "address": "123 Street; Apt 4",
+                "birthday": "1990-05-15"
+            }
+        ).get_json()
+        c_id = contact_json['id']
+        
+        # Test 1: Single export
+        response = self.client.get(f'/api/contacts/{c_id}/vcard')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['Content-Type'], 'text/vcard')
+        vcard_data = response.data.decode('utf-8')
+        
+        self.assertIn('BEGIN:VCARD', vcard_data)
+        self.assertIn('FN:vCard User', vcard_data)
+        self.assertIn('TEL;TYPE=CELL:+1 (555) 999-8888', vcard_data)
+        self.assertIn('EMAIL;TYPE=INTERNET:vcard@example.com', vcard_data)
+        self.assertIn('ADR;TYPE=HOME:;;123 Street\\; Apt 4;;;;', vcard_data)
+        self.assertIn('BDAY:1990-05-15', vcard_data)
+        self.assertIn('END:VCARD', vcard_data)
+        
+        # Test 2: Bulk export
+        response_bulk = self.client.get(f'/api/contacts/vcard/export?ids={c_id}')
+        self.assertEqual(response_bulk.status_code, 200)
+        self.assertEqual(response_bulk.headers['Content-Type'], 'text/vcard')
+        self.assertIn('FN:vCard User', response_bulk.data.decode('utf-8'))
 
 if __name__ == '__main__':
     unittest.main()

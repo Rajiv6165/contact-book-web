@@ -4,6 +4,7 @@ import json
 import csv
 import io
 import uuid
+import base64
 from datetime import datetime, timezone, date, timedelta
 from flask import Flask, request, jsonify, render_template, make_response, redirect, url_for, session, g, send_from_directory
 
@@ -116,6 +117,7 @@ class Contact(db.Model):
     favorite = db.Column(db.Boolean, default=False, nullable=False)
     birthday = db.Column(db.Date, nullable=True)
     avatar_url = db.Column(db.String(300), nullable=True)
+    deleted_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -133,6 +135,7 @@ class Contact(db.Model):
             'favorite': self.favorite,
             'birthday': self.birthday.strftime('%Y-%m-%d') if self.birthday else None,
             'avatar_url': self.avatar_url,
+            'deleted_at': self.deleted_at.isoformat() if self.deleted_at else None,
             'tags': [t.to_dict() for t in self.tags],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
@@ -219,12 +222,19 @@ def migrate_database_schema():
             with db.engine.begin() as conn:
                 conn.execute(db.text("ALTER TABLE contacts ADD COLUMN birthday DATE"))
                 
-        # Get updated columns list to check avatar_url
+        # Inspect columns list to check avatar_url
         columns = [c['name'] for c in inspector.get_columns('contacts')]
         if 'avatar_url' not in columns:
             app.logger.info("Schema migration: Adding avatar_url column to contacts table.")
             with db.engine.begin() as conn:
                 conn.execute(db.text("ALTER TABLE contacts ADD COLUMN avatar_url VARCHAR(300)"))
+                
+        # Inspect columns list to check deleted_at (soft delete support)
+        columns = [c['name'] for c in inspector.get_columns('contacts')]
+        if 'deleted_at' not in columns:
+            app.logger.info("Schema migration: Adding deleted_at column to contacts table.")
+            with db.engine.begin() as conn:
+                conn.execute(db.text("ALTER TABLE contacts ADD COLUMN deleted_at DATETIME"))
     except Exception as e:
         app.logger.error(f"Error during schema migration: {e}")
 
@@ -233,8 +243,8 @@ def calculate_upcoming_birthdays(user_id):
     today = date.today()
     upcoming = []
     
-    # Query contacts with birthdays belonging to the user
-    contacts = Contact.query.filter(Contact.user_id == user_id, Contact.birthday.isnot(None)).all()
+    # Query non-deleted contacts with birthdays belonging to the user
+    contacts = Contact.query.filter(Contact.user_id == user_id, Contact.deleted_at.is_(None), Contact.birthday.isnot(None)).all()
     
     for c in contacts:
         bdate = c.birthday
@@ -276,6 +286,63 @@ def delete_avatar_file(avatar_url):
             except Exception as e:
                 app.logger.error(f"Error deleting avatar file {file_path}: {e}")
 
+# Auto-purge function for contacts soft-deleted for more than 30 days
+def purge_old_deleted_contacts():
+    try:
+        with app.app_context():
+            # SQLite does not strictly enforce timezone math but comparison is supported
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            old_deleted = Contact.query.filter(
+                Contact.deleted_at.isnot(None),
+                Contact.deleted_at < thirty_days_ago
+            ).all()
+            count = len(old_deleted)
+            for c in old_deleted:
+                if c.avatar_url:
+                    delete_avatar_file(c.avatar_url)
+                db.session.delete(c)
+            db.session.commit()
+            if count > 0:
+                app.logger.info(f"Auto-purged {count} trashed contacts older than 30 days.")
+    except Exception as e:
+        app.logger.error(f"Error during auto-purge: {e}")
+
+# Standard vCard 3.0 Generation Helper
+def generate_vcard_content(contacts):
+    lines = []
+    for contact in contacts:
+        lines.append("BEGIN:VCARD")
+        lines.append("VERSION:3.0")
+        lines.append(f"FN:{contact.name}")
+        
+        if contact.phone:
+            lines.append(f"TEL;TYPE=CELL:{contact.phone}")
+        if contact.email:
+            lines.append(f"EMAIL;TYPE=INTERNET:{contact.email}")
+        if contact.address:
+            escaped_address = contact.address.replace(';', '\\;')
+            lines.append(f"ADR;TYPE=HOME:;;{escaped_address};;;;")
+        if contact.birthday:
+            lines.append(f"BDAY:{contact.birthday.strftime('%Y-%m-%d')}")
+            
+        if contact.avatar_url:
+            prefix = '/static/avatars/'
+            if contact.avatar_url.startswith(prefix):
+                filename = contact.avatar_url[len(prefix):]
+                file_path = os.path.join(AVATAR_UPLOAD_FOLDER, filename)
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'rb') as f:
+                            encoded = base64.b64encode(f.read()).decode('utf-8')
+                        ext = os.path.splitext(filename)[1].lower()
+                        img_type = "JPEG" if ext in ['.jpg', '.jpeg'] else ext[1:].upper()
+                        lines.append(f"PHOTO;TYPE={img_type};ENCODING=b:{encoded}")
+                    except Exception as e:
+                        app.logger.error(f"Error encoding photo for vcard: {e}")
+                        
+        lines.append("END:VCARD")
+    return "\r\n".join(lines) + "\r\n"
+
 # One-time migration function
 def migrate_if_needed():
     try:
@@ -299,7 +366,6 @@ def migrate_if_needed():
         orphaned_contacts = Contact.query.filter(Contact.user_id.is_(None)).all()
 
         if orphaned_contacts or has_json_contacts:
-            # We need to find or create the default user to assign contacts to
             default_user = User.query.first()
             if not default_user:
                 username = os.environ.get('BASIC_AUTH_USERNAME') or 'admin'
@@ -315,14 +381,12 @@ def migrate_if_needed():
                 db.session.commit()
                 app.logger.info(f"Created default migration user: {username}")
                 
-            # Assign orphaned contacts to the default user
             if orphaned_contacts:
                 for contact in orphaned_contacts:
                     contact.user_id = default_user.id
                 db.session.commit()
                 app.logger.info(f"Assigned {len(orphaned_contacts)} orphaned contacts to user '{default_user.username}'.")
                 
-            # Import JSON contacts if database was empty
             if has_json_contacts:
                 app.logger.info("Empty database detected. Seeding contacts from JSON.")
                 for item in json_contacts_data:
@@ -330,8 +394,8 @@ def migrate_if_needed():
                     if not name:
                         continue
                     
-                    # Duplicate check for this user
-                    existing = Contact.query.filter_by(user_id=default_user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
+                    # Duplicate check for this user (excluding deleted ones)
+                    existing = Contact.query.filter_by(user_id=default_user.id).filter(Contact.deleted_at.is_(None)).filter(db.func.lower(Contact.name) == name.lower()).first()
                     if existing:
                         continue
                     
@@ -461,8 +525,8 @@ def get_contacts():
     sort_param = request.args.get('sort', 'name').strip()
     tag_param = request.args.get('tag', '').strip()
 
-    # Query builder - scope by current user
-    query = Contact.query.filter_by(user_id=g.user.id)
+    # Query builder - scope by current user and exclude soft-deleted ones
+    query = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None))
 
     # Filter by tag
     if tag_param:
@@ -482,21 +546,24 @@ def get_contacts():
     if sort_param == 'recent':
         query = query.order_by(Contact.favorite.desc(), Contact.updated_at.desc())
     else:
-        # Default alphabetical
         query = query.order_by(Contact.favorite.desc(), db.func.lower(Contact.name).asc())
 
     filtered_contacts = query.all()
     
     # Calculate list of uppercase letters having contacts in database overall for the user
-    all_contacts = Contact.query.filter_by(user_id=g.user.id).all()
+    all_contacts = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None)).all()
     initials = sorted(list(set(c.name[0].upper() for c in all_contacts if c.name)))
     upcoming_birthdays = calculate_upcoming_birthdays(g.user.id)
+    
+    # Calculate soft deleted trash count
+    trash_count = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.isnot(None)).count()
 
     return jsonify({
         'contacts': [c.to_dict() for c in filtered_contacts],
         'total_count': len(filtered_contacts),
         'initials': initials,
-        'upcoming_birthdays': upcoming_birthdays
+        'upcoming_birthdays': upcoming_birthdays,
+        'trash_count': trash_count
     })
 
 @app.route('/api/contacts', methods=['POST'])
@@ -509,8 +576,8 @@ def create_contact():
 
     name = data.get('name', '').strip()
     
-    # Duplicate name check for this user (case-insensitive)
-    existing = Contact.query.filter_by(user_id=g.user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
+    # Duplicate name check for this user (excluding deleted ones)
+    existing = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None)).filter(db.func.lower(Contact.name) == name.lower()).first()
     if existing:
         return jsonify({"errors": [f"A contact with the name '{name}' already exists."]}), 409
 
@@ -567,14 +634,14 @@ def create_contact():
 
 @app.route('/api/contacts/<int:contact_id>', methods=['GET'])
 def get_contact(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
     return jsonify(contact.to_dict())
 
 @app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'PATCH'])
 def update_contact(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
 
@@ -585,11 +652,12 @@ def update_contact(contact_id):
     if errors:
         return jsonify({"errors": errors}), 400
 
-    # If updating name, check duplicates (excluding current contact)
+    # If updating name, check duplicates (excluding current contact and deleted contacts)
     if 'name' in data:
         name = data.get('name', '').strip()
         existing = Contact.query.filter(
             Contact.user_id == g.user.id,
+            Contact.deleted_at.is_(None),
             db.func.lower(Contact.name) == name.lower(),
             Contact.id != contact_id
         ).first()
@@ -651,22 +719,22 @@ def update_contact(contact_id):
     db.session.commit()
     return jsonify(contact.to_dict())
 
+# Soft delete route (moves to trash)
 @app.route('/api/contacts/<int:contact_id>', methods=['DELETE'])
 def delete_contact(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
     
-    if contact.avatar_url:
-        delete_avatar_file(contact.avatar_url)
-        
-    db.session.delete(contact)
+    contact.deleted_at = datetime.now(timezone.utc)
+    contact.updated_at = datetime.now(timezone.utc)
     db.session.commit()
-    return jsonify({"message": "Contact deleted successfully."})
+    return jsonify({"message": "Contact moved to Trash.", "id": contact.id})
 
+# Toggle pin status
 @app.route('/api/contacts/<int:contact_id>/favorite', methods=['POST'])
 def toggle_favorite(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
         
@@ -676,90 +744,7 @@ def toggle_favorite(contact_id):
     
     return jsonify(contact.to_dict())
 
-# Custom upload/delete REST routes for avatars
-@app.route('/api/contacts/<int:contact_id>/avatar', methods=['POST'])
-def upload_avatar(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
-    if not contact:
-        return jsonify({"errors": ["Contact not found."]}), 404
-        
-    if 'file' not in request.files:
-        return jsonify({"errors": ["No file part in the request."]}), 400
-        
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"errors": ["No selected file."]}), 400
-        
-    # Check extension
-    filename = file.filename
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in ['.jpg', '.jpeg', '.png', '.webp']:
-        return jsonify({"errors": ["Invalid file type. Only JPG, PNG, and WEBP are allowed."]}), 400
-        
-    # Check file size (max 3MB)
-    try:
-        file.seek(0, os.SEEK_END)
-        file_size = file.tell()
-        file.seek(0)
-        if file_size > 3 * 1024 * 1024:
-            return jsonify({"errors": ["File size exceeds 3MB limit."]}), 400
-    except Exception as e:
-        return jsonify({"errors": [f"Error checking file size: {e}"]}), 400
-        
-    # Process with Pillow
-    try:
-        img = Image.open(file.stream)
-        
-        # Convert RGBA to RGB if JPEG
-        if ext in ['.jpg', '.jpeg'] and img.mode in ('RGBA', 'LA'):
-            background = Image.new('RGB', img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3])
-            img = background
-            
-        # Resize to max 400x400
-        img.thumbnail((400, 400))
-        
-        # Generate unique filename using UUID
-        unique_hash = uuid.uuid4().hex[:8]
-        sanitized_ext = '.jpg' if ext in ['.jpg', '.jpeg'] else ext
-        new_filename = f"avatar_{contact_id}_{unique_hash}{sanitized_ext}"
-        
-        # Ensure folder exists
-        os.makedirs(AVATAR_UPLOAD_FOLDER, exist_ok=True)
-        
-        save_path = os.path.join(AVATAR_UPLOAD_FOLDER, new_filename)
-        img.save(save_path)
-        
-        # Delete old avatar file
-        old_avatar = contact.avatar_url
-        if old_avatar:
-            delete_avatar_file(old_avatar)
-            
-        contact.avatar_url = f"/static/avatars/{new_filename}"
-        contact.updated_at = datetime.now(timezone.utc)
-        db.session.commit()
-        
-        return jsonify(contact.to_dict()), 200
-    except Exception as e:
-        app.logger.error(f"Image processing failed: {e}")
-        return jsonify({"errors": [f"Image processing failed: {str(e)}"]}), 500
-
-
-@app.route('/api/contacts/<int:contact_id>/avatar', methods=['DELETE'])
-def remove_avatar(contact_id):
-    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
-    if not contact:
-        return jsonify({"errors": ["Contact not found."]}), 404
-        
-    if contact.avatar_url:
-        delete_avatar_file(contact.avatar_url)
-        contact.avatar_url = None
-        contact.updated_at = datetime.now(timezone.utc)
-        db.session.commit()
-        
-    return jsonify(contact.to_dict()), 200
-
-
+# Soft delete bulk contacts route
 @app.route('/api/contacts/bulk-delete', methods=['POST'])
 def bulk_delete_contacts():
     data = request.get_json() or {}
@@ -767,16 +752,16 @@ def bulk_delete_contacts():
     if not ids:
         return jsonify({"errors": ["No contact IDs provided."]}), 400
         
-    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).all()
+    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).filter(Contact.deleted_at.is_(None)).all()
     count = len(contacts)
     for c in contacts:
-        if c.avatar_url:
-            delete_avatar_file(c.avatar_url)
-        db.session.delete(c)
+        c.deleted_at = datetime.now(timezone.utc)
+        c.updated_at = datetime.now(timezone.utc)
     db.session.commit()
     
-    return jsonify({"message": f"Successfully deleted {count} contacts."})
+    return jsonify({"message": f"Successfully moved {count} contacts to Trash."})
 
+# Bulk tag route
 @app.route('/api/contacts/bulk-tag', methods=['POST'])
 def bulk_tag_contacts():
     data = request.get_json() or {}
@@ -796,7 +781,7 @@ def bulk_tag_contacts():
         db.session.add(tag)
         db.session.commit()
         
-    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).all()
+    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).filter(Contact.deleted_at.is_(None)).all()
     count = 0
     for c in contacts:
         if tag not in c.tags:
@@ -806,13 +791,12 @@ def bulk_tag_contacts():
     
     return jsonify({"message": f"Successfully added tag '{tname}' to {count} contacts."})
 
+# CSV export route
 @app.route('/api/contacts/export', methods=['GET'])
 def export_contacts():
     try:
-        # Scope by user
-        query = Contact.query.filter_by(user_id=g.user.id)
+        query = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None))
         
-        # Support selected IDs export
         ids_param = request.args.get('ids', '').strip()
         if ids_param:
             ids = [int(x) for x in ids_param.split(',') if x.isdigit()]
@@ -849,6 +833,79 @@ def export_contacts():
         app.logger.error(f"CSV export error: {str(e)}")
         return jsonify({"errors": [f"Export failed: {str(e)}"]}), 500
 
+# vCard Export Endpoint (Single Contact)
+@app.route('/api/contacts/<int:contact_id>/vcard', methods=['GET'])
+def export_single_vcard(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found."]}), 404
+        
+    vcard_text = generate_vcard_content([contact])
+    response = make_response(vcard_text)
+    safe_name = "".join([c for c in contact.name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+    safe_name = safe_name.replace(' ', '_') or 'contact'
+    response.headers["Content-Disposition"] = f"attachment; filename={safe_name}.vcf"
+    response.headers["Content-Type"] = "text/vcard"
+    return response
+
+# vCard Export Endpoint (All or bulk select)
+@app.route('/api/contacts/vcard/export', methods=['GET'])
+def export_bulk_vcard():
+    try:
+        query = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None))
+        
+        ids_param = request.args.get('ids', '').strip()
+        if ids_param:
+            ids = [int(x) for x in ids_param.split(',') if x.isdigit()]
+            query = query.filter(Contact.id.in_(ids))
+            
+        contacts = query.order_by(db.func.lower(Contact.name).asc()).all()
+        
+        vcard_text = generate_vcard_content(contacts)
+        response = make_response(vcard_text)
+        response.headers["Content-Disposition"] = "attachment; filename=contacts.vcf"
+        response.headers["Content-Type"] = "text/vcard"
+        return response
+    except Exception as e:
+        app.logger.error(f"vCard export error: {str(e)}")
+        return jsonify({"errors": [f"Export failed: {str(e)}"]}), 500
+
+# Soft-deleted trash contacts list route
+@app.route('/api/contacts/trash', methods=['GET'])
+def get_trash_contacts():
+    contacts = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.isnot(None)).order_by(Contact.deleted_at.desc()).all()
+    return jsonify({
+        'contacts': [c.to_dict() for c in contacts],
+        'total_count': len(contacts)
+    })
+
+# Restore soft-deleted contact
+@app.route('/api/contacts/<int:contact_id>/restore', methods=['POST'])
+def restore_contact(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.isnot(None)).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found in trash."]}), 404
+        
+    contact.deleted_at = None
+    contact.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify(contact.to_dict()), 200
+
+# Permanent Delete endpoint (hard delete + disk photo cleanup)
+@app.route('/api/contacts/<int:contact_id>/permanent', methods=['DELETE'])
+def permanent_delete_contact(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.isnot(None)).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found in trash."]}), 404
+        
+    if contact.avatar_url:
+        delete_avatar_file(contact.avatar_url)
+        
+    db.session.delete(contact)
+    db.session.commit()
+    return jsonify({"message": "Contact permanently deleted."}), 200
+
+# CSV import route
 @app.route('/api/contacts/import', methods=['POST'])
 def import_contacts():
     if 'file' not in request.files:
@@ -897,7 +954,8 @@ def import_contacts():
                 errors.append(f"Row {row_idx} ({name}): Name exceeds 120 characters.")
                 continue
 
-            existing = Contact.query.filter_by(user_id=g.user.id).filter(db.func.lower(Contact.name) == name.lower()).first()
+            # Duplicate name check excludes deleted contacts
+            existing = Contact.query.filter_by(user_id=g.user.id).filter(Contact.deleted_at.is_(None)).filter(db.func.lower(Contact.name) == name.lower()).first()
             if existing:
                 skipped_count += 1
                 continue
@@ -980,6 +1038,77 @@ def import_contacts():
         "errors": errors
     })
 
+# Custom avatar upload/delete endpoints
+@app.route('/api/contacts/<int:contact_id>/avatar', methods=['POST'])
+def upload_avatar(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found."]}), 404
+        
+    if 'file' not in request.files:
+        return jsonify({"errors": ["No file part in the request."]}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"errors": ["No selected file."]}), 400
+        
+    ext = os.path.splitext(filename)[1].lower() if 'filename' in locals() else os.path.splitext(file.filename)[1].lower()
+    if ext not in ['.jpg', '.jpeg', '.png', '.webp']:
+        return jsonify({"errors": ["Invalid file type. Only JPG, PNG, and WEBP are allowed."]}), 400
+        
+    try:
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
+        if file_size > 3 * 1024 * 1024:
+            return jsonify({"errors": ["File size exceeds 3MB limit."]}), 400
+    except Exception as e:
+        return jsonify({"errors": [f"Error checking file size: {e}"]}), 400
+        
+    try:
+        img = Image.open(file.stream)
+        if ext in ['.jpg', '.jpeg'] and img.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+            
+        img.thumbnail((400, 400))
+        unique_hash = uuid.uuid4().hex[:8]
+        sanitized_ext = '.jpg' if ext in ['.jpg', '.jpeg'] else ext
+        new_filename = f"avatar_{contact_id}_{unique_hash}{sanitized_ext}"
+        
+        os.makedirs(AVATAR_UPLOAD_FOLDER, exist_ok=True)
+        save_path = os.path.join(AVATAR_UPLOAD_FOLDER, new_filename)
+        img.save(save_path)
+        
+        old_avatar = contact.avatar_url
+        if old_avatar:
+            delete_avatar_file(old_avatar)
+            
+        contact.avatar_url = f"/static/avatars/{new_filename}"
+        contact.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+        
+        return jsonify(contact.to_dict()), 200
+    except Exception as e:
+        app.logger.error(f"Image processing failed: {e}")
+        return jsonify({"errors": [f"Image processing failed: {str(e)}"]}), 500
+
+
+@app.route('/api/contacts/<int:contact_id>/avatar', methods=['DELETE'])
+def remove_avatar(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).filter(Contact.deleted_at.is_(None)).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found."]}), 404
+        
+    if contact.avatar_url:
+        delete_avatar_file(contact.avatar_url)
+        contact.avatar_url = None
+        contact.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+        
+    return jsonify(contact.to_dict()), 200
+
 # Serving SPA
 @app.route('/', methods=['GET'])
 def index():
@@ -994,14 +1123,14 @@ def health():
 def handle_404(e):
     if request.path.startswith('/api/'):
         return jsonify({"errors": ["Resource not found."]}), 404
-    # Fallback to SPA for frontend navigation routes
     return render_template("index.html")
 
-# Initialize database and seed migrations
+# Initialize database and migrations
 with app.app_context():
     db.create_all()
     migrate_database_schema()
     migrate_if_needed()
+    purge_old_deleted_contacts()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

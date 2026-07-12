@@ -192,8 +192,10 @@ All API payloads and response bodies exchange data in JSON format. Validation er
 - **Save Notifications**: Fires subtle toast updates using active verbs (e.g. "Card inserted", "Changes saved", "Record purged", "Imported 12 cards, skipped 2 duplicates").
 - **Tags & Organization**: Assign multiple tags to any contact with a vintage handwritten-style tag chip palette. Filter cards by selected tags using the tag filter dropdown combinable with search and the A-Z rail. Autocomplete suggestions are offered as you type in the modal.
 - **Birthday Celebrations & Upcoming Panel**: Add an optional birthday to any contact card to render a birthday icon. A collapsible panel displays all upcoming birthdays in the next 30 days, sorted chronologically.
-- **Select Mode & Bulk Operations**: Toggle Select Mode to display card checkboxes. Execute actions like bulk delete (with confirmation), bulk tag addition, and bulk exporting (CSV) on all checked contacts at once.
+- **Select Mode & Bulk Operations**: Toggle Select Mode to display card checkboxes. Execute actions like bulk delete (with confirmation), bulk tag addition, and bulk exporting (CSV and vCard) on all checked contacts at once.
 - **Contact Avatars & Typewriter Monograms**: Add an optional photo to any contact (supporting JPG, PNG, and WEBP under 3MB). Images are resized server-side to 400x400 pixels to conserve storage. Cards fallback to displaying a deterministically-colored typewriter monogram stamp based on the contact's name.
+- **vCard Export (3.0 Format)**: Download any individual contact card as a standard `.vcf` file, or bulk export multiple contacts as a single combined `.vcf` file from the main header or bulk actions bar. Generates valid `VCARD` specifications mapping names, cells, emails, addresses (with semicolon sanitization), birthdays, and base64-encoded profile pictures.
+- **Soft Delete & Trash System**: Moving a card to trash is a non-destructive soft delete that updates a `deleted_at` timestamp. Trashed cards are excluded from general searches and alphabetical rails. Deleted cards are stored in a dedicated "Trash Drawer" for 30 days before being permanently purged. A temporary toast is shown when deleting a contact, letting the user immediately click "Undo" to restore it.
 
 ---
 

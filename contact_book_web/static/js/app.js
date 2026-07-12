@@ -21,7 +21,10 @@ const state = {
     
     // Phase 3: Avatar State
     avatarFileToUpload: null,
-    avatarAction: 'none' // 'none', 'upload', 'remove'
+    avatarAction: 'none', // 'none', 'upload', 'remove'
+
+    // Phase 4: Trash System State
+    viewingTrash: false
 };
 
 // DOM Elements
@@ -83,8 +86,19 @@ const bulkSelectedCount = document.getElementById('bulk-selected-count');
 const bulkTagInput = document.getElementById('bulk-tag-input');
 const bulkTagApplyBtn = document.getElementById('bulk-tag-apply-btn');
 const bulkExportBtn = document.getElementById('bulk-export-btn');
+const bulkExportVcardBtn = document.getElementById('bulk-export-vcard-btn');
 const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
 const bulkCancelBtn = document.getElementById('bulk-cancel-btn');
+
+// Phase 4 UI Elements
+const trashToggleBtn = document.getElementById('trash-toggle-btn');
+const trashBadge = document.getElementById('trash-badge');
+const trashBanner = document.getElementById('trash-banner');
+const exitTrashBtn = document.getElementById('exit-trash-btn');
+const exportDropdownBtn = document.getElementById('export-dropdown-btn');
+const exportDropdownMenu = document.getElementById('export-dropdown-menu');
+const exportCsvOpt = document.getElementById('export-csv-opt');
+const exportVcardOpt = document.getElementById('export-vcard-opt');
 
 // Regex patterns for validation
 const PHONE_REGEX = /^\+?[\d\s\-()\.]{3,40}$/;
@@ -180,17 +194,31 @@ function setupEventListeners() {
     const themeToggleBtn = document.getElementById('theme-toggle-btn');
     if (themeToggleBtn) {
         themeToggleBtn.innerHTML = `
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         `;
         themeToggleBtn.setAttribute('aria-label', 'Switch to After Hours dark theme');
         themeToggleBtn.addEventListener('click', toggleTheme);
     }
 
-    // CSV Export button (Unselected global)
-    const exportCsvBtn = document.getElementById('export-csv-btn');
-    if (exportCsvBtn) {
-        exportCsvBtn.addEventListener('click', () => {
+    // --- Phase 4 Dropdown Export Binds ---
+    if (exportDropdownBtn && exportDropdownMenu) {
+        exportDropdownBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = exportDropdownMenu.style.display === 'block';
+            exportDropdownMenu.style.display = isOpen ? 'none' : 'block';
+        });
+        document.addEventListener('click', () => {
+            exportDropdownMenu.style.display = 'none';
+        });
+    }
+    if (exportCsvOpt) {
+        exportCsvOpt.addEventListener('click', () => {
             window.location.href = '/api/contacts/export';
+        });
+    }
+    if (exportVcardOpt) {
+        exportVcardOpt.addEventListener('click', () => {
+            window.location.href = '/api/contacts/vcard/export';
         });
     }
 
@@ -264,7 +292,18 @@ function setupEventListeners() {
         bulkDeleteBtn.addEventListener('click', applyBulkDelete);
     }
     if (bulkExportBtn) {
-        bulkExportBtn.addEventListener('click', applyBulkExport);
+        bulkExportBtn.addEventListener('click', () => {
+            const ids = state.selectedContactIds.join(',');
+            if (ids) window.location.href = `/api/contacts/export?ids=${ids}`;
+            toggleSelectMode();
+        });
+    }
+    if (bulkExportVcardBtn) {
+        bulkExportVcardBtn.addEventListener('click', () => {
+            const ids = state.selectedContactIds.join(',');
+            if (ids) window.location.href = `/api/contacts/vcard/export?ids=${ids}`;
+            toggleSelectMode();
+        });
     }
 
     // --- Phase 3: Avatar Upload Listeners ---
@@ -279,6 +318,25 @@ function setupEventListeners() {
     }
     if (removeAvatarBtn) {
         removeAvatarBtn.addEventListener('click', handleAvatarRemoval);
+    }
+
+    // --- Phase 4: Trash Drawer Listeners ---
+    if (trashToggleBtn) {
+        trashToggleBtn.addEventListener('click', () => {
+            state.viewingTrash = !state.viewingTrash;
+            // Clear selections if exiting/entering trash
+            state.selectedContactIds = [];
+            state.isSelectMode = false;
+            selectModeBtn.classList.remove('active');
+            selectModeBtn.querySelector('span').textContent = 'Select Mode';
+            fetchContacts();
+        });
+    }
+    if (exitTrashBtn) {
+        exitTrashBtn.addEventListener('click', () => {
+            state.viewingTrash = false;
+            fetchContacts();
+        });
     }
 }
 
@@ -353,7 +411,6 @@ function getMonogramColor(name) {
         hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
     const hue = Math.abs(hash % 360);
-    // Maintain desaturated vintage library look colors
     const saturation = 30 + (Math.abs(hash >> 1) % 8); // 30% - 38%
     const lightness = 76 + (Math.abs(hash >> 2) % 8);   // 76% - 84%
     return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
@@ -418,17 +475,28 @@ function renderTagsDropdown() {
     tagFilterSelect.value = currentValue;
 }
 
-// Fetch Contacts API
+// Fetch Contacts API (supporting Trash Drawer load toggling)
 async function fetchContacts() {
     showScreen('loading');
     state.isLoading = true;
     
+    // Toggle main workspace controls layout depending on active Trash Drawer state
+    const controlsRow = document.querySelector('.controls-row');
+    const alphabetRail = document.querySelector('.alphabet-rail');
+    
+    if (state.viewingTrash) {
+        if (controlsRow) controlsRow.style.display = 'none';
+        if (alphabetRail) alphabetRail.style.display = 'none';
+        if (birthdayPanel) birthdayPanel.style.display = 'none';
+        if (trashBanner) trashBanner.style.display = 'flex';
+    } else {
+        if (controlsRow) controlsRow.style.display = 'flex';
+        if (alphabetRail) alphabetRail.style.display = 'flex';
+        if (trashBanner) trashBanner.style.display = 'none';
+    }
+
     try {
-        let url = `/api/contacts?q=${encodeURIComponent(state.searchQuery)}&sort=${state.sortBy}`;
-        if (state.selectedTag) {
-            url += `&tag=${encodeURIComponent(state.selectedTag)}`;
-        }
-        
+        const url = state.viewingTrash ? '/api/contacts/trash' : `/api/contacts?q=${encodeURIComponent(state.searchQuery)}&sort=${state.sortBy}${state.selectedTag ? '&tag=' + encodeURIComponent(state.selectedTag) : ''}`;
         const response = await fetch(url);
         
         if (!response.ok) {
@@ -440,7 +508,21 @@ async function fetchContacts() {
         state.initials = data.initials || [];
         
         renderUI();
-        renderBirthdayPanel(data.upcoming_birthdays || []);
+
+        if (!state.viewingTrash) {
+            renderBirthdayPanel(data.upcoming_birthdays || []);
+            
+            // Render trash badge counter
+            const trashCount = data.trash_count || 0;
+            if (trashBadge) {
+                if (trashCount > 0) {
+                    trashBadge.textContent = trashCount;
+                    trashBadge.style.display = 'flex';
+                } else {
+                    trashBadge.style.display = 'none';
+                }
+            }
+        }
     } catch (err) {
         console.error('Fetch error:', err);
         showScreen('error');
@@ -454,7 +536,7 @@ async function fetchContacts() {
 function renderBirthdayPanel(upcomingBirthdays) {
     if (!birthdayPanel || !birthdayPanelContent) return;
     
-    if (upcomingBirthdays.length === 0) {
+    if (upcomingBirthdays.length === 0 || state.viewingTrash) {
         birthdayPanel.style.display = 'none';
         return;
     }
@@ -497,10 +579,15 @@ function formatBirthdayLabel(dateStr) {
 
 // Render dynamic components
 function renderUI() {
-    renderAlphabetRail();
-    renderCardsGrid();
-    
-    contactsCountDisplay.textContent = `Total cards: ${state.contacts.length}`;
+    if (state.viewingTrash) {
+        alphabetList.innerHTML = '';
+        renderCardsGrid();
+        contactsCountDisplay.textContent = `Deleted cards: ${state.contacts.length}`;
+    } else {
+        renderAlphabetRail();
+        renderCardsGrid();
+        contactsCountDisplay.textContent = `Total cards: ${state.contacts.length}`;
+    }
 }
 
 // Render left side index tabs
@@ -560,13 +647,19 @@ function renderCardsGrid() {
     contactsGrid.innerHTML = '';
     
     let filteredContacts = state.contacts;
-    if (state.activeLetter !== 'ALL') {
+    if (!state.viewingTrash && state.activeLetter !== 'ALL') {
         filteredContacts = state.contacts.filter(c => c.name && c.name[0].toUpperCase() === state.activeLetter);
     }
     
     if (state.contacts.length === 0) {
-        if (state.searchQuery || state.selectedTag) {
+        if (state.viewingTrash) {
             showScreen('no-results');
+            document.querySelector('#no-results-state .empty-title').textContent = 'Trash Drawer is empty';
+            document.querySelector('#no-results-state .empty-desc').textContent = 'Deleted contacts remain here for 30 days before permanent purging.';
+        } else if (state.searchQuery || state.selectedTag) {
+            showScreen('no-results');
+            document.querySelector('#no-results-state .empty-title').textContent = 'No matching records';
+            document.querySelector('#no-results-state .empty-desc').textContent = 'No cards in the drawer match your search term. Try another query.';
         } else {
             showScreen('empty');
         }
@@ -592,7 +685,11 @@ function createContactCardElement(contact) {
     card.className = `contact-card ${contact.favorite ? 'is-favorite' : ''}`;
     card.setAttribute('data-id', contact.id);
     
-    if (state.isSelectMode) {
+    if (state.viewingTrash) {
+        card.classList.add('is-trashed');
+    }
+    
+    if (state.isSelectMode && !state.viewingTrash) {
         card.classList.add('select-mode-active');
         
         // Add checkbox
@@ -660,7 +757,7 @@ function createContactCardElement(contact) {
         ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`
         : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
     
-    if (state.isSelectMode) {
+    if (state.isSelectMode || state.viewingTrash) {
         favoriteBtn.disabled = true;
     } else {
         favoriteBtn.addEventListener('click', (e) => {
@@ -749,7 +846,7 @@ function createContactCardElement(contact) {
     
     card.appendChild(cardTop);
     
-    // Bottom Controls & Catalog Rod Hole
+    // Bottom Controls
     const cardBottom = document.createElement('div');
     cardBottom.style.display = 'flex';
     cardBottom.style.flexDirection = 'column';
@@ -757,37 +854,84 @@ function createContactCardElement(contact) {
     const actionsRow = document.createElement('div');
     actionsRow.className = 'card-actions';
     
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'card-action-btn btn-edit';
-    editBtn.setAttribute('aria-label', `Edit card for ${contact.name}`);
-    editBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
-    
-    if (state.isSelectMode) {
-        editBtn.disabled = true;
-    } else {
-        editBtn.addEventListener('click', (e) => {
+    if (state.viewingTrash) {
+        // Trashed controls: Restore / Permanent Delete
+        const restoreBtn = document.createElement('button');
+        restoreBtn.type = 'button';
+        restoreBtn.className = 'card-action-btn';
+        restoreBtn.setAttribute('aria-label', `Restore card for ${contact.name}`);
+        restoreBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><polyline points="3 3 3 8 8 8"></polyline></svg> <span style="font-size: 0.8rem; margin-left: 2px;">Restore</span>`;
+        restoreBtn.style.display = 'inline-flex';
+        restoreBtn.style.alignItems = 'center';
+        restoreBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            openModal(contact);
+            restoreContact(contact.id, contact.name);
         });
-    }
-    actionsRow.appendChild(editBtn);
-    
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'card-action-btn btn-delete';
-    deleteBtn.setAttribute('aria-label', `Delete card for ${contact.name}`);
-    deleteBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>`;
-    
-    if (state.isSelectMode) {
-        deleteBtn.disabled = true;
-    } else {
-        deleteBtn.addEventListener('click', (e) => {
+        actionsRow.appendChild(restoreBtn);
+
+        const permDeleteBtn = document.createElement('button');
+        permDeleteBtn.type = 'button';
+        permDeleteBtn.className = 'card-action-btn btn-permanent-delete';
+        permDeleteBtn.setAttribute('aria-label', `Permanently delete card for ${contact.name}`);
+        permDeleteBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> <span style="font-size: 0.8rem; margin-left: 2px;">Purge</span>`;
+        permDeleteBtn.style.display = 'inline-flex';
+        permDeleteBtn.style.alignItems = 'center';
+        permDeleteBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            showInlineDeleteConfirm(card, contact);
+            deletePermanently(contact.id, contact.name);
         });
+        actionsRow.appendChild(permDeleteBtn);
+    } else {
+        // Standard view controls: Edit, vCard, Delete
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'card-action-btn btn-edit';
+        editBtn.setAttribute('aria-label', `Edit card for ${contact.name}`);
+        editBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
+        
+        if (state.isSelectMode) {
+            editBtn.disabled = true;
+        } else {
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openModal(contact);
+            });
+        }
+        actionsRow.appendChild(editBtn);
+
+        // Individual vCard download button
+        const vcardBtn = document.createElement('button');
+        vcardBtn.type = 'button';
+        vcardBtn.className = 'card-action-btn';
+        vcardBtn.setAttribute('aria-label', `Export vCard for ${contact.name}`);
+        vcardBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><polyline points="10 9 9 9 8 9"></polyline></svg>`;
+        
+        if (state.isSelectMode) {
+            vcardBtn.disabled = true;
+        } else {
+            vcardBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                window.location.href = `/api/contacts/${contact.id}/vcard`;
+            });
+        }
+        actionsRow.appendChild(vcardBtn);
+        
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'card-action-btn btn-delete';
+        deleteBtn.setAttribute('aria-label', `Delete card for ${contact.name}`);
+        deleteBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>`;
+        
+        if (state.isSelectMode) {
+            deleteBtn.disabled = true;
+        } else {
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                showInlineDeleteConfirm(card, contact);
+            });
+        }
+        actionsRow.appendChild(deleteBtn);
     }
-    actionsRow.appendChild(deleteBtn);
     
     cardBottom.appendChild(actionsRow);
     
@@ -800,7 +944,7 @@ function createContactCardElement(contact) {
     return card;
 }
 
-// Inline card deletion confirmation overlay
+// Inline card deletion confirmation overlay (triggers soft delete)
 function showInlineDeleteConfirm(cardElement, contact) {
     if (cardElement.querySelector('.card-delete-overlay')) return;
     
@@ -900,7 +1044,7 @@ function sortContactsArray() {
     });
 }
 
-// API: Delete Contact
+// API: Soft Delete Contact (with toast Undo link)
 async function deleteContact(id, name) {
     try {
         const response = await fetch(`/api/contacts/${id}`, {
@@ -911,7 +1055,8 @@ async function deleteContact(id, name) {
             throw new Error('Failed to delete contact.');
         }
         
-        showToast(`Record purged for ${name}`, 'success');
+        // Show toast notification containing undo action button
+        showToastWithUndo(`Moved record for ${name} to Trash.`, id);
         fetchContacts();
     } catch (err) {
         console.error(err);
@@ -922,6 +1067,41 @@ async function deleteContact(id, name) {
             const overlay = card.querySelector('.card-delete-overlay');
             if (overlay) overlay.remove();
         }
+    }
+}
+
+// Restore soft-deleted contacts
+async function restoreContact(id, name) {
+    try {
+        const response = await fetch(`/api/contacts/${id}/restore`, {
+            method: 'POST'
+        });
+        if (!response.ok) throw new Error('Restore contact API call failed.');
+        
+        showToast(`Restored card for ${name}`, 'success');
+        fetchContacts();
+    } catch (e) {
+        console.error(e);
+        showToast(`Failed to restore ${name}.`, 'danger');
+    }
+}
+
+// Permanent Delete route from within Trash
+async function deletePermanently(id, name) {
+    if (!confirm(`Are you absolutely sure you want to permanently purge card for ${name} from the archives? This action is irreversible.`)) {
+        return;
+    }
+    try {
+        const response = await fetch(`/api/contacts/${id}/permanent`, {
+            method: 'DELETE'
+        });
+        if (!response.ok) throw new Error('Permanent delete failed.');
+        
+        showToast(`Permanently purged record for ${name}`, 'success');
+        fetchContacts();
+    } catch (e) {
+        console.error(e);
+        showToast(`Could not permanently delete ${name}.`, 'danger');
     }
 }
 
@@ -1321,6 +1501,51 @@ function showToast(message, type = 'success') {
     }, 4000);
 }
 
+// Phase 4: Toast notification with inline clickable Undo action
+function showToastWithUndo(message, contactId) {
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    
+    const textSpan = document.createElement('span');
+    textSpan.textContent = message;
+    toast.appendChild(textSpan);
+    
+    // Inline Undo button
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.className = 'toast-undo-btn';
+    undoBtn.textContent = 'Undo';
+    undoBtn.addEventListener('click', async () => {
+        try {
+            const response = await fetch(`/api/contacts/${contactId}/restore`, { method: 'POST' });
+            if (!response.ok) throw new Error('Undo restore failed.');
+            toast.remove();
+            showToast('Action undone. Record restored.', 'success');
+            fetchContacts();
+        } catch (e) {
+            console.error(e);
+            showToast('Undelete failed.', 'danger');
+        }
+    });
+    toast.appendChild(undoBtn);
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'toast-close';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', () => toast.remove());
+    toast.appendChild(closeBtn);
+    
+    toastContainer.appendChild(toast);
+    
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.5s ease';
+            setTimeout(() => toast.remove(), 500);
+        }
+    }, 5000); // 5-second window
+}
+
 // Escape HTML utility for security
 function escapeHtml(text) {
     if (!text) return '';
@@ -1466,7 +1691,7 @@ async function applyBulkDelete() {
     const count = state.selectedContactIds.length;
     if (count === 0) return;
     
-    if (!confirm(`Are you absolutely sure you want to permanently purge all ${count} selected records?`)) {
+    if (!confirm(`Are you absolutely sure you want to move all ${count} selected records to the Trash?`)) {
         return;
     }
     
@@ -1483,18 +1708,11 @@ async function applyBulkDelete() {
         
         if (!response.ok) throw new Error('Bulk delete failed.');
         
-        showToast(`Purged ${count} records from database.`, 'success');
+        showToast(`Moved ${count} records to Trash.`, 'success');
         toggleSelectMode(); // Exit select mode
         fetchContacts();
     } catch (e) {
         console.error(e);
         showToast('Filing failed. Could not delete records.', 'danger');
     }
-}
-
-function applyBulkExport() {
-    const ids = state.selectedContactIds.join(',');
-    if (!ids) return;
-    window.location.href = `/api/contacts/export?ids=${ids}`;
-    toggleSelectMode();
 }
