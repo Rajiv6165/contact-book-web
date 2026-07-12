@@ -46,6 +46,14 @@
                     <button id="clear-search-btn" class="clear-btn" aria-label="Clear search" style="display: none;">&times;</button>
                 </div>
                 
+                <!-- Tag Filter -->
+                <div class="tag-filter-container">
+                    <span class="control-label">Tag:</span>
+                    <select id="tag-filter-select" class="tag-filter-select" aria-label="Filter by Tag">
+                        <option value="">All Tags</option>
+                    </select>
+                </div>
+
                 <!-- Sort Actions -->
                 <div class="sort-actions">
                     <span class="control-label">Sort:</span>
@@ -62,6 +70,10 @@
                 <!-- Actions Group -->
                 <div class="actions-group">
                     <input type="file" id="import-csv-file" accept=".csv" style="display: none;">
+                    <button type="button" id="select-mode-btn" class="action-btn-outline" aria-label="Toggle Select Mode">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><polyline points="9 11 12 14 22 4"></polyline></svg>
+                        <span>Select Mode</span>
+                    </button>
                     <button type="button" id="import-csv-btn" class="action-btn-outline" aria-label="Import contacts from CSV">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                         <span>Import CSV</span>
@@ -91,6 +103,15 @@
 
             <!-- Cards Grid Area -->
             <section class="catalog-cards-section" aria-live="polite">
+                <!-- Collapsible Upcoming Birthdays -->
+                <div id="birthday-panel" class="birthday-panel" style="display: none;">
+                    <button type="button" class="birthday-panel-header" id="birthday-panel-toggle" aria-expanded="true">
+                        <span class="birthday-title">🎂 Upcoming Birthdays (Next 30 Days)</span>
+                        <span class="birthday-toggle-icon">▼</span>
+                    </button>
+                    <div id="birthday-panel-content" class="birthday-panel-content"></div>
+                </div>
+
                 <div id="loading-state" class="loading-state" style="display: none;">
                     <div class="spinner"></div>
                     <p>Filing through drawer...</p>
@@ -184,6 +205,26 @@
                     <span class="inline-error" id="error-address"></span>
                 </div>
 
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="contact-birthday" class="form-label">Birthday</label>
+                        <input type="date" id="contact-birthday" name="birthday" class="form-input monospace" autocomplete="off">
+                        <span class="inline-error" id="error-birthday"></span>
+                    </div>
+                    <div class="form-group">
+                        <label for="contact-tag-input" class="form-label">Add Tag (Press Enter)</label>
+                        <div class="tag-input-relative" style="position: relative;">
+                            <input type="text" id="contact-tag-input" class="form-input" placeholder="e.g. Work, Friend" autocomplete="off">
+                            <div id="tag-suggestions" class="tag-suggestions" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Tags</label>
+                    <div id="modal-tags-list" class="modal-tags-list"></div>
+                </div>
+
                 <div class="form-group">
                     <label for="contact-notes" class="form-label">Memoranda / Notes</label>
                     <textarea id="contact-notes" name="notes" class="form-input" rows="4" maxlength="2000" placeholder="Additional observations, details or correspondence details..."></textarea>
@@ -220,6 +261,28 @@
             <div class="confirm-actions">
                 <button type="button" id="cancel-delete-btn" class="action-btn-secondary">Keep Card</button>
                 <button type="button" id="approve-delete-btn" class="action-btn-danger">Purge Record</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Bulk Action Bar -->
+    <div id="bulk-action-bar" class="bulk-action-bar" style="display: none;">
+        <div class="bulk-action-bar-inner">
+            <span id="bulk-selected-count" class="bulk-selected-count">0 items selected</span>
+            <div class="bulk-actions-group">
+                <div class="bulk-tag-input-container">
+                    <input type="text" id="bulk-tag-input" class="bulk-tag-input" placeholder="Tag name..." autocomplete="off">
+                    <button type="button" id="bulk-tag-apply-btn" class="action-btn-primary bulk-apply-btn">Apply Tag</button>
+                </div>
+                <button type="button" id="bulk-export-btn" class="action-btn-outline">
+                    <span>Export CSV</span>
+                </button>
+                <button type="button" id="bulk-delete-btn" class="action-btn-danger">
+                    <span>Purge Selected</span>
+                </button>
+                <button type="button" id="bulk-cancel-btn" class="action-btn-secondary">
+                    <span>Cancel</span>
+                </button>
             </div>
         </div>
     </div>

@@ -190,6 +190,9 @@ All API payloads and response bodies exchange data in JSON format. Validation er
 - **Inline Card Purge Overlay**: Clicking delete prompts a slide-up confirmation banner directly on the card itself, avoiding modal fatigue and aligning with the catalog physical context.
 - **Notes Field Preview**: Surface contact memoranda/notes as a subtle, muted, smaller text snippet (first 60 characters with ellipsis `...` fallback) separated by a thin dashed divider below the address.
 - **Save Notifications**: Fires subtle toast updates using active verbs (e.g. "Card inserted", "Changes saved", "Record purged", "Imported 12 cards, skipped 2 duplicates").
+- **Tags & Organization**: Assign multiple tags to any contact with a vintage handwritten-style tag chip palette. Filter cards by selected tags using the tag filter dropdown combinable with search and the A-Z rail. Autocomplete suggestions are offered as you type in the modal.
+- **Birthday Celebrations & Upcoming Panel**: Add an optional birthday to any contact card to render a birthday icon. A collapsible panel displays all upcoming birthdays in the next 30 days, sorted chronologically.
+- **Select Mode & Bulk Operations**: Toggle Select Mode to display card checkboxes. Execute actions like bulk delete (with confirmation), bulk tag addition, and bulk exporting (CSV) on all checked contacts at once.
 
 ---
 

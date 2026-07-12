@@ -3,7 +3,7 @@ import re
 import json
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from flask import Flask, request, jsonify, render_template, make_response, redirect, url_for, session, g
 
 # SQLAlchemy database import
@@ -33,6 +33,16 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-card-catalog-secret
 
 db = SQLAlchemy(app)
 
+# Fixed desaturated vintage color palette for index cards tags
+TAG_PALETTE = [
+    '#8F9E8B',  # Sage Green
+    '#D9A74A',  # Mustard Yellow
+    '#C86A5A',  # Terracotta
+    '#7A90A4',  # Dusty Blue
+    '#967D91',  # Vintage Violet
+    '#5C5A55'   # Graphite
+]
+
 # Database Models
 class User(db.Model):
     __tablename__ = 'users'
@@ -46,6 +56,32 @@ class User(db.Model):
     contacts = db.relationship('Contact', backref='user', lazy=True)
 
 
+# Association Table for Many-to-Many Contacts and Tags
+contact_tags = db.Table('contact_tags',
+    db.Column('contact_id', db.Integer, db.ForeignKey('contacts.id', ondelete='CASCADE'), primary_key=True),
+    db.Column('tag_id', db.Integer, db.ForeignKey('tags.id', ondelete='CASCADE'), primary_key=True)
+)
+
+
+class Tag(db.Model):
+    __tablename__ = 'tags'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    name = db.Column(db.String(50), nullable=False)
+    color = db.Column(db.String(20), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'name', name='uix_user_id_tag_name'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'color': self.color
+        }
+
+
 class Contact(db.Model):
     __tablename__ = 'contacts'
 
@@ -57,8 +93,11 @@ class Contact(db.Model):
     address = db.Column(db.String(300), nullable=True)
     notes = db.Column(db.Text, nullable=True)
     favorite = db.Column(db.Boolean, default=False, nullable=False)
+    birthday = db.Column(db.Date, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    tags = db.relationship('Tag', secondary=contact_tags, backref=db.backref('contacts', lazy='dynamic'))
 
     def to_dict(self):
         return {
@@ -70,6 +109,8 @@ class Contact(db.Model):
             'address': self.address or '',
             'notes': self.notes or '',
             'favorite': self.favorite,
+            'birthday': self.birthday.strftime('%Y-%m-%d') if self.birthday else None,
+            'tags': [t.to_dict() for t in self.tags],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -134,6 +175,15 @@ def validate_contact_data(data, is_patch=False):
         if notes and len(str(notes)) > 2000:
             errors.append("Notes must not exceed 2000 characters.")
 
+    # Validate birthday
+    if 'birthday' in data:
+        birthday = data.get('birthday')
+        if birthday:
+            try:
+                datetime.strptime(str(birthday).strip(), '%Y-%m-%d')
+            except ValueError:
+                errors.append("Invalid birthday format. Expected YYYY-MM-DD.")
+
     return errors
 
 # Dynamic Schema Migration Helper
@@ -141,12 +191,45 @@ def migrate_database_schema():
     try:
         inspector = db.inspect(db.engine)
         columns = [c['name'] for c in inspector.get_columns('contacts')]
-        if 'user_id' not in columns:
-            app.logger.info("Schema migration: Adding user_id column to contacts table.")
+        if 'birthday' not in columns:
+            app.logger.info("Schema migration: Adding birthday column to contacts table.")
             with db.engine.begin() as conn:
-                conn.execute(db.text("ALTER TABLE contacts ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+                conn.execute(db.text("ALTER TABLE contacts ADD COLUMN birthday DATE"))
     except Exception as e:
         app.logger.error(f"Error during schema migration: {e}")
+
+# Helper to calculate upcoming birthdays in next 30 days
+def calculate_upcoming_birthdays(user_id):
+    today = date.today()
+    upcoming = []
+    
+    # Query contacts with birthdays belonging to the user
+    contacts = Contact.query.filter(Contact.user_id == user_id, Contact.birthday.isnot(None)).all()
+    
+    for c in contacts:
+        bdate = c.birthday
+        # Calculate birthday in the current year
+        try:
+            this_year_birthday = bdate.replace(year=today.year)
+        except ValueError:
+            # Handle Feb 29 on non-leap years
+            this_year_birthday = bdate.replace(year=today.year, day=28)
+            
+        if this_year_birthday < today:
+            try:
+                next_birthday = this_year_birthday.replace(year=today.year + 1)
+            except ValueError:
+                # Handle Feb 29
+                next_birthday = this_year_birthday.replace(year=today.year + 1, day=28)
+        else:
+            next_birthday = this_year_birthday
+            
+        days_until = (next_birthday - today).days
+        if 0 <= days_until <= 30:
+            upcoming.append((c, days_until))
+            
+    upcoming.sort(key=lambda x: x[1])
+    return [c.to_dict() for c, days in upcoming]
 
 # One-time migration function
 def migrate_if_needed():
@@ -322,13 +405,23 @@ def logout():
 
 
 # API Routes
+@app.route('/api/tags', methods=['GET'])
+def get_tags():
+    tags = Tag.query.filter_by(user_id=g.user.id).order_by(Tag.name.asc()).all()
+    return jsonify({'tags': [t.to_dict() for t in tags]})
+
 @app.route('/api/contacts', methods=['GET'])
 def get_contacts():
     query_param = request.args.get('q', '').strip()
     sort_param = request.args.get('sort', 'name').strip()
+    tag_param = request.args.get('tag', '').strip()
 
     # Query builder - scope by current user
     query = Contact.query.filter_by(user_id=g.user.id)
+
+    # Filter by tag
+    if tag_param:
+        query = query.filter(Contact.tags.any(Tag.name == tag_param))
 
     # Apply search filter across name, phone, email, address (case-insensitive)
     if query_param:
@@ -352,11 +445,13 @@ def get_contacts():
     # Calculate list of uppercase letters having contacts in database overall for the user
     all_contacts = Contact.query.filter_by(user_id=g.user.id).all()
     initials = sorted(list(set(c.name[0].upper() for c in all_contacts if c.name)))
+    upcoming_birthdays = calculate_upcoming_birthdays(g.user.id)
 
     return jsonify({
         'contacts': [c.to_dict() for c in filtered_contacts],
         'total_count': len(filtered_contacts),
-        'initials': initials
+        'initials': initials,
+        'upcoming_birthdays': upcoming_birthdays
     })
 
 @app.route('/api/contacts', methods=['POST'])
@@ -380,6 +475,34 @@ def create_contact():
     notes = data.get('notes', '').strip() if data.get('notes') else None
     favorite = bool(data.get('favorite', False))
 
+    birthday = None
+    if 'birthday' in data:
+        bday_str = data.get('birthday')
+        if bday_str:
+            birthday = datetime.strptime(str(bday_str).strip(), '%Y-%m-%d').date()
+
+    # Process tags (deduplicated)
+    assigned_tags = []
+    if 'tags' in data:
+        tag_list = data.get('tags', [])
+        seen = set()
+        dedup_tags = []
+        for x in tag_list:
+            x_str = str(x).strip()
+            if x_str and x_str.lower() not in seen:
+                seen.add(x_str.lower())
+                dedup_tags.append(x_str)
+                
+        for tname in dedup_tags:
+            tag = Tag.query.filter_by(user_id=g.user.id, name=tname).first()
+            if not tag:
+                existing_count = Tag.query.filter_by(user_id=g.user.id).count()
+                color = TAG_PALETTE[existing_count % len(TAG_PALETTE)]
+                tag = Tag(user_id=g.user.id, name=tname, color=color)
+                db.session.add(tag)
+                db.session.commit()
+            assigned_tags.append(tag)
+
     new_contact = Contact(
         name=name,
         phone=phone or None,
@@ -387,8 +510,10 @@ def create_contact():
         address=address or None,
         notes=notes or None,
         favorite=favorite,
-        user_id=g.user.id
+        user_id=g.user.id,
+        birthday=birthday
     )
+    new_contact.tags = assigned_tags
 
     db.session.add(new_contact)
     db.session.commit()
@@ -446,6 +571,35 @@ def update_contact(contact_id):
     if 'favorite' in data:
         contact.favorite = bool(data.get('favorite', False))
 
+    if 'birthday' in data:
+        bday_str = data.get('birthday')
+        if bday_str:
+            contact.birthday = datetime.strptime(str(bday_str).strip(), '%Y-%m-%d').date()
+        else:
+            contact.birthday = None
+
+    if 'tags' in data:
+        assigned_tags = []
+        tag_list = data.get('tags', [])
+        seen = set()
+        dedup_tags = []
+        for x in tag_list:
+            x_str = str(x).strip()
+            if x_str and x_str.lower() not in seen:
+                seen.add(x_str.lower())
+                dedup_tags.append(x_str)
+                
+        for tname in dedup_tags:
+            tag = Tag.query.filter_by(user_id=g.user.id, name=tname).first()
+            if not tag:
+                existing_count = Tag.query.filter_by(user_id=g.user.id).count()
+                color = TAG_PALETTE[existing_count % len(TAG_PALETTE)]
+                tag = Tag(user_id=g.user.id, name=tname, color=color)
+                db.session.add(tag)
+                db.session.commit()
+            assigned_tags.append(tag)
+        contact.tags = assigned_tags
+
     # Explicitly update timestamp
     contact.updated_at = datetime.now(timezone.utc)
     
@@ -474,18 +628,72 @@ def toggle_favorite(contact_id):
     
     return jsonify(contact.to_dict())
 
+@app.route('/api/contacts/bulk-delete', methods=['POST'])
+def bulk_delete_contacts():
+    data = request.get_json() or {}
+    ids = data.get('ids', [])
+    if not ids:
+        return jsonify({"errors": ["No contact IDs provided."]}), 400
+        
+    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).all()
+    count = len(contacts)
+    for c in contacts:
+        db.session.delete(c)
+    db.session.commit()
+    
+    return jsonify({"message": f"Successfully deleted {count} contacts."})
+
+@app.route('/api/contacts/bulk-tag', methods=['POST'])
+def bulk_tag_contacts():
+    data = request.get_json() or {}
+    ids = data.get('ids', [])
+    tname = str(data.get('tag', '')).strip()
+    
+    if not ids:
+        return jsonify({"errors": ["No contact IDs provided."]}), 400
+    if not tname:
+        return jsonify({"errors": ["Tag name is required."]}), 400
+        
+    tag = Tag.query.filter_by(user_id=g.user.id, name=tname).first()
+    if not tag:
+        existing_count = Tag.query.filter_by(user_id=g.user.id).count()
+        color = TAG_PALETTE[existing_count % len(TAG_PALETTE)]
+        tag = Tag(user_id=g.user.id, name=tname, color=color)
+        db.session.add(tag)
+        db.session.commit()
+        
+    contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).all()
+    count = 0
+    for c in contacts:
+        if tag not in c.tags:
+            c.tags.append(tag)
+            count += 1
+    db.session.commit()
+    
+    return jsonify({"message": f"Successfully added tag '{tname}' to {count} contacts."})
+
 @app.route('/api/contacts/export', methods=['GET'])
 def export_contacts():
     try:
-        contacts = Contact.query.filter_by(user_id=g.user.id).order_by(db.func.lower(Contact.name).asc()).all()
+        # Scope by user
+        query = Contact.query.filter_by(user_id=g.user.id)
+        
+        # Support selected IDs export
+        ids_param = request.args.get('ids', '').strip()
+        if ids_param:
+            ids = [int(x) for x in ids_param.split(',') if x.isdigit()]
+            query = query.filter(Contact.id.in_(ids))
+
+        contacts = query.order_by(db.func.lower(Contact.name).asc()).all()
         
         output = io.StringIO()
         writer = csv.writer(output)
         
         # Write headers
-        writer.writerow(['name', 'phone', 'email', 'address', 'notes', 'favorite', 'created_at', 'updated_at'])
+        writer.writerow(['name', 'phone', 'email', 'address', 'notes', 'favorite', 'birthday', 'tags', 'created_at', 'updated_at'])
         
         for c in contacts:
+            tags_str = ','.join([t.name for t in c.tags])
             writer.writerow([
                 c.name,
                 c.phone or '',
@@ -493,6 +701,8 @@ def export_contacts():
                 c.address or '',
                 c.notes or '',
                 'true' if c.favorite else 'false',
+                c.birthday.isoformat() if c.birthday else '',
+                tags_str,
                 c.created_at.isoformat() if c.created_at else '',
                 c.updated_at.isoformat() if c.updated_at else ''
             ])
@@ -587,6 +797,30 @@ def import_contacts():
             fav_val = get_val('favorite').lower()
             favorite = fav_val in ['1', 'true', 'yes', 'y']
 
+            # Parse birthday
+            birthday_str = get_val('birthday')
+            birthday = None
+            if birthday_str:
+                try:
+                    birthday = datetime.strptime(birthday_str, '%Y-%m-%d').date()
+                except ValueError:
+                    pass
+
+            # Parse tags
+            imported_tags = []
+            tags_val = get_val('tags')
+            if tags_val:
+                tag_names = [t.strip() for t in tags_val.split(',') if t.strip()]
+                for tname in tag_names:
+                    tag = Tag.query.filter_by(user_id=g.user.id, name=tname).first()
+                    if not tag:
+                        existing_count = Tag.query.filter_by(user_id=g.user.id).count()
+                        color = TAG_PALETTE[existing_count % len(TAG_PALETTE)]
+                        tag = Tag(user_id=g.user.id, name=tname, color=color)
+                        db.session.add(tag)
+                        db.session.commit()
+                    imported_tags.append(tag)
+
             new_contact = Contact(
                 name=name,
                 phone=phone if phone else None,
@@ -594,8 +828,10 @@ def import_contacts():
                 address=address if address else None,
                 notes=notes if notes else None,
                 favorite=favorite,
+                birthday=birthday,
                 user_id=g.user.id
             )
+            new_contact.tags = imported_tags
             db.session.add(new_contact)
             imported_count += 1
             

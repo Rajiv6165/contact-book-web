@@ -7,7 +7,7 @@ import io
 # Ensure the contact_book_web directory is on the path
 sys.path.append(os.path.dirname(__file__))
 
-from app import app, db, Contact, User
+from app import app, db, Contact, User, Tag
 
 class ContactBookTestCase(unittest.TestCase):
     def setUp(self):
@@ -125,7 +125,7 @@ class ContactBookTestCase(unittest.TestCase):
         self.assertIn('attachment; filename=contacts.csv', response.headers['Content-Disposition'])
         
         csv_data = response.data.decode('utf-8')
-        self.assertIn('name,phone,email,address,notes,favorite,created_at,updated_at', csv_data)
+        self.assertIn('name,phone,email,address,notes,favorite,birthday,tags,created_at,updated_at', csv_data)
         self.assertIn('Alice', csv_data)
         self.assertIn('Bob', csv_data)
 
@@ -262,6 +262,180 @@ class ContactBookTestCase(unittest.TestCase):
         # User B should get 404 when trying to delete User A's contact
         response = client_b.delete(f'/api/contacts/{contact_id}')
         self.assertEqual(response.status_code, 404)
+
+    # --- Phase 2: Contact Organization Tests ---
+
+    def test_create_tag_and_association(self):
+        payload = {
+            "name": "Tagged Contact",
+            "tags": ["Work", "Personal", "Work"]  # tests deduplication and creation
+        }
+        response = self.client.post('/api/contacts', json=payload)
+        self.assertEqual(response.status_code, 201)
+        data = json.loads(response.data)
+        self.assertEqual(len(data['tags']), 2)
+        tag_names = [t['name'] for t in data['tags']]
+        self.assertIn("Work", tag_names)
+        self.assertIn("Personal", tag_names)
+        
+        # Check colors are assigned
+        for t in data['tags']:
+            self.assertTrue(t['color'].startswith('#'))
+        
+        # Verify tags list API
+        response_tags = self.client.get('/api/tags')
+        self.assertEqual(response_tags.status_code, 200)
+        tags_data = json.loads(response_tags.data)['tags']
+        self.assertEqual(len(tags_data), 2)
+        
+        # Test filtering contacts by tag
+        response_filter = self.client.get('/api/contacts?tag=Work')
+        self.assertEqual(response_filter.status_code, 200)
+        filter_data = json.loads(response_filter.data)
+        self.assertEqual(filter_data['total_count'], 1)
+        self.assertEqual(filter_data['contacts'][0]['name'], "Tagged Contact")
+
+    def test_tag_user_isolation(self):
+        # Create tag for User A
+        self.client.post('/api/contacts', json={"name": "Alice", "tags": ["SecretTag"]})
+        
+        # Create User B
+        with app.app_context():
+            from werkzeug.security import generate_password_hash
+            user_b = User(
+                username='user_b',
+                email='userb@example.com',
+                password_hash=generate_password_hash('passwordB')
+            )
+            db.session.add(user_b)
+            db.session.commit()
+            user_b_id = user_b.id
+            
+        client_b = app.test_client()
+        with client_b.session_transaction() as sess:
+            sess['user_id'] = user_b_id
+            
+        # User B should have 0 tags
+        response = client_b.get('/api/tags')
+        self.assertEqual(response.status_code, 200)
+        tags_data = json.loads(response.data)['tags']
+        self.assertEqual(len(tags_data), 0)
+
+        # User B tries filtering by User A's tag name
+        response_filter = client_b.get('/api/contacts?tag=SecretTag')
+        self.assertEqual(response_filter.status_code, 200)
+        self.assertEqual(json.loads(response_filter.data)['total_count'], 0)
+
+    def test_birthday_validation_and_upcoming(self):
+        # Test invalid date formatting
+        payload = {"name": "Bad Bday", "birthday": "1980-44-88"}
+        response = self.client.post('/api/contacts', json=payload)
+        self.assertEqual(response.status_code, 400)
+        
+        # Calculate dates for upcoming checks
+        from datetime import date, timedelta
+        today = date.today()
+        bday_upcoming = today + timedelta(days=10)
+        bday_far = today + timedelta(days=45)
+        
+        bday_upcoming_str = f"1985-{bday_upcoming.month:02d}-{bday_upcoming.day:02d}"
+        bday_far_str = f"1985-{bday_far.month:02d}-{bday_far.day:02d}"
+        
+        self.client.post('/api/contacts', json={"name": "Upcoming Contact", "birthday": bday_upcoming_str})
+        self.client.post('/api/contacts', json={"name": "Far Contact", "birthday": bday_far_str})
+        
+        # Verify upcoming birthdays returned in main list endpoint
+        response = self.client.get('/api/contacts')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        
+        upcoming_names = [c['name'] for c in data['upcoming_birthdays']]
+        self.assertIn("Upcoming Contact", upcoming_names)
+        self.assertNotIn("Far Contact", upcoming_names)
+
+    def test_bulk_delete(self):
+        # User A contacts
+        c1 = self.client.post('/api/contacts', json={"name": "C1"}).get_json()
+        c2 = self.client.post('/api/contacts', json={"name": "C2"}).get_json()
+        
+        # User B setup
+        with app.app_context():
+            from werkzeug.security import generate_password_hash
+            user_b = User(
+                username='user_b',
+                email='userb@example.com',
+                password_hash=generate_password_hash('passwordB')
+            )
+            db.session.add(user_b)
+            db.session.commit()
+            user_b_id = user_b.id
+            
+        client_b = app.test_client()
+        with client_b.session_transaction() as sess:
+            sess['user_id'] = user_b_id
+        c3 = client_b.post('/api/contacts', json={"name": "C3"}).get_json()
+        
+        # User B bulk deletes c1 (belonging to A) and c3 (belonging to B)
+        payload = {"ids": [c1['id'], c3['id']]}
+        response = client_b.post('/api/contacts/bulk-delete', json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertIn("Successfully deleted 1 contacts.", data['message']) # only c3 deleted
+        
+        # Verify c1 still exists for User A
+        response_a = self.client.get(f'/api/contacts/{c1["id"]}')
+        self.assertEqual(response_a.status_code, 200)
+        
+        # Verify c3 is deleted for User B
+        response_b = client_b.get(f'/api/contacts/{c3["id"]}')
+        self.assertEqual(response_b.status_code, 404)
+
+    def test_bulk_tag(self):
+        c1 = self.client.post('/api/contacts', json={"name": "C1"}).get_json()
+        
+        with app.app_context():
+            from werkzeug.security import generate_password_hash
+            user_b = User(
+                username='user_b',
+                email='userb@example.com',
+                password_hash=generate_password_hash('passwordB')
+            )
+            db.session.add(user_b)
+            db.session.commit()
+            user_b_id = user_b.id
+            
+        client_b = app.test_client()
+        with client_b.session_transaction() as sess:
+            sess['user_id'] = user_b_id
+        c3 = client_b.post('/api/contacts', json={"name": "C3"}).get_json()
+        
+        # User B bulk tags c1 and c3
+        payload = {"ids": [c1['id'], c3['id']], "tag": "Work"}
+        response = client_b.post('/api/contacts/bulk-tag', json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertIn("Successfully added tag 'Work' to 1 contacts.", data['message'])
+        
+        # User A's c1 should not be tagged
+        c1_updated = self.client.get(f'/api/contacts/{c1["id"]}').get_json()
+        self.assertEqual(len(c1_updated['tags']), 0)
+        
+        # User B's c3 should be tagged
+        c3_updated = client_b.get(f'/api/contacts/{c3["id"]}').get_json()
+        self.assertEqual(len(c3_updated['tags']), 1)
+        self.assertEqual(c3_updated['tags'][0]['name'], "Work")
+
+    def test_bulk_export(self):
+        c1 = self.client.post('/api/contacts', json={"name": "Alice"}).get_json()
+        c2 = self.client.post('/api/contacts', json={"name": "Bob"}).get_json()
+        c3 = self.client.post('/api/contacts', json={"name": "Charlie"}).get_json()
+        
+        response = self.client.get(f'/api/contacts/export?ids={c1["id"]},{c3["id"]}')
+        self.assertEqual(response.status_code, 200)
+        csv_data = response.data.decode('utf-8')
+        self.assertIn('Alice', csv_data)
+        self.assertIn('Charlie', csv_data)
+        self.assertNotIn('Bob', csv_data)
 
 if __name__ == '__main__':
     unittest.main()
