@@ -17,7 +17,11 @@ const state = {
     isLoading: false,
     focusedElementBeforeModal: null,
     theme: 'light',
-    modalSelectedTags: [] // tags currently added in the add/edit modal
+    modalSelectedTags: [], // tags currently added in the add/edit modal
+    
+    // Phase 3: Avatar State
+    avatarFileToUpload: null,
+    avatarAction: 'none' // 'none', 'upload', 'remove'
 };
 
 // DOM Elements
@@ -51,6 +55,12 @@ const formErrorBox = document.getElementById('form-error-box');
 const formErrorList = document.getElementById('form-error-list');
 const closeModalBtn = document.getElementById('close-modal-btn');
 const cancelFormBtn = document.getElementById('cancel-form-btn');
+
+// Avatar Modal Elements
+const contactAvatarFile = document.getElementById('contact-avatar-file');
+const modalAvatarPreview = document.getElementById('modal-avatar-preview');
+const uploadAvatarBtn = document.getElementById('upload-avatar-btn');
+const removeAvatarBtn = document.getElementById('remove-avatar-btn');
 
 // State Screens
 const loadingState = document.getElementById('loading-state');
@@ -143,6 +153,22 @@ function setupEventListeners() {
             const errorSpan = document.getElementById(`error-${input.name}`);
             if (errorSpan) errorSpan.textContent = '';
         });
+    });
+
+    // Name input real-time monogram generation binding
+    contactNameInput.addEventListener('input', () => {
+        if (state.avatarAction !== 'upload' && state.avatarAction !== 'none') return;
+        
+        // Only update if no file is chosen to upload
+        if (!state.avatarFileToUpload) {
+            const hasExistingAvatar = (state.avatarAction === 'none' && contactIdInput.value && getContactAvatarUrl(contactIdInput.value));
+            if (!hasExistingAvatar) {
+                const initials = getInitials(contactNameInput.value);
+                modalAvatarPreview.style.backgroundImage = 'none';
+                modalAvatarPreview.textContent = initials;
+                modalAvatarPreview.style.backgroundColor = getMonogramColor(contactNameInput.value);
+            }
+        }
     });
 
     // Retry button on error screen
@@ -240,6 +266,97 @@ function setupEventListeners() {
     if (bulkExportBtn) {
         bulkExportBtn.addEventListener('click', applyBulkExport);
     }
+
+    // --- Phase 3: Avatar Upload Listeners ---
+    if (uploadAvatarBtn && contactAvatarFile) {
+        uploadAvatarBtn.addEventListener('click', () => contactAvatarFile.click());
+    }
+    if (modalAvatarPreview && contactAvatarFile) {
+        modalAvatarPreview.addEventListener('click', () => contactAvatarFile.click());
+    }
+    if (contactAvatarFile) {
+        contactAvatarFile.addEventListener('change', handleAvatarSelection);
+    }
+    if (removeAvatarBtn) {
+        removeAvatarBtn.addEventListener('click', handleAvatarRemoval);
+    }
+}
+
+// Get contact's avatar_url dynamically by ID from local state array
+function getContactAvatarUrl(id) {
+    const contact = state.contacts.find(c => c.id === parseInt(id));
+    return contact ? contact.avatar_url : null;
+}
+
+// Handle local file picking for live modal previews
+function handleAvatarSelection(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Validate size (3MB)
+    if (file.size > 3 * 1024 * 1024) {
+        showToast('Image file size exceeds 3MB limit.', 'danger');
+        contactAvatarFile.value = '';
+        return;
+    }
+
+    // Validate format
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+        showToast('Only JPG, PNG, and WEBP formats are allowed.', 'danger');
+        contactAvatarFile.value = '';
+        return;
+    }
+
+    state.avatarFileToUpload = file;
+    state.avatarAction = 'upload';
+
+    // Show live preview using FileReader
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        modalAvatarPreview.style.backgroundImage = `url(${event.target.result})`;
+        modalAvatarPreview.textContent = '';
+        modalAvatarPreview.style.backgroundColor = 'transparent';
+        removeAvatarBtn.style.display = 'inline-block';
+    };
+    reader.readAsDataURL(file);
+}
+
+// Revert preview to generated monogram stamps
+function handleAvatarRemoval() {
+    contactAvatarFile.value = '';
+    state.avatarFileToUpload = null;
+    state.avatarAction = 'remove';
+
+    const name = contactNameInput.value;
+    modalAvatarPreview.style.backgroundImage = 'none';
+    modalAvatarPreview.textContent = getInitials(name);
+    modalAvatarPreview.style.backgroundColor = getMonogramColor(name);
+    removeAvatarBtn.style.display = 'none';
+}
+
+// Generate typewriter monogram text initials e.g. "Samuel Morse" -> "SM"
+function getInitials(name) {
+    if (!name) return '?';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.trim().substring(0, 2).toUpperCase();
+}
+
+// Hash monogram background color deterministically
+function getMonogramColor(name) {
+    if (!name) return '#E6DED0';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = Math.abs(hash % 360);
+    // Maintain desaturated vintage library look colors
+    const saturation = 30 + (Math.abs(hash >> 1) % 8); // 30% - 38%
+    const lightness = 76 + (Math.abs(hash >> 2) % 8);   // 76% - 84%
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 }
 
 // Debounce helper
@@ -513,6 +630,22 @@ function createContactCardElement(contact) {
     
     const headerRow = document.createElement('div');
     headerRow.className = 'card-header-row';
+    
+    // Avatar / Photo support
+    let avatarEl;
+    if (contact.avatar_url) {
+        avatarEl = document.createElement('img');
+        avatarEl.src = contact.avatar_url;
+        avatarEl.alt = `${contact.name}'s photo`;
+        avatarEl.className = 'card-avatar';
+    } else {
+        avatarEl = document.createElement('div');
+        avatarEl.className = 'monogram-avatar';
+        avatarEl.textContent = getInitials(contact.name);
+        avatarEl.style.backgroundColor = getMonogramColor(contact.name);
+        avatarEl.style.borderColor = 'rgba(0,0,0,0.1)';
+    }
+    headerRow.appendChild(avatarEl);
     
     const nameHeading = document.createElement('h3');
     nameHeading.className = 'contact-name';
@@ -797,6 +930,11 @@ function openModal(contact = null) {
     state.focusedElementBeforeModal = document.activeElement;
     clearFormErrors();
     
+    // Reset file uploads fields
+    contactAvatarFile.value = '';
+    state.avatarFileToUpload = null;
+    state.avatarAction = 'none';
+    
     if (contact) {
         // Edit mode
         modalTitle.textContent = 'Edit Catalog Card';
@@ -813,6 +951,19 @@ function openModal(contact = null) {
         
         state.modalSelectedTags = (contact.tags || []).map(t => t.name);
         
+        // Setup Avatar preview
+        if (contact.avatar_url) {
+            modalAvatarPreview.style.backgroundImage = `url(${contact.avatar_url})`;
+            modalAvatarPreview.textContent = '';
+            modalAvatarPreview.style.backgroundColor = 'transparent';
+            removeAvatarBtn.style.display = 'inline-block';
+        } else {
+            modalAvatarPreview.style.backgroundImage = 'none';
+            modalAvatarPreview.textContent = getInitials(contact.name);
+            modalAvatarPreview.style.backgroundColor = getMonogramColor(contact.name);
+            removeAvatarBtn.style.display = 'none';
+        }
+        
         document.getElementById('save-form-btn').textContent = 'Save Changes';
     } else {
         // Create mode
@@ -823,6 +974,12 @@ function openModal(contact = null) {
         contactIdInput.value = '';
         contactFavoriteInput.checked = false;
         state.modalSelectedTags = [];
+        
+        // Setup default monogram placeholder
+        modalAvatarPreview.style.backgroundImage = 'none';
+        modalAvatarPreview.textContent = '?';
+        modalAvatarPreview.style.backgroundColor = '#E6DED0';
+        removeAvatarBtn.style.display = 'none';
         
         document.getElementById('save-form-btn').textContent = 'Insert Card';
     }
@@ -1059,11 +1216,38 @@ async function handleFormSubmit(e) {
             return;
         }
         
+        const savedContact = responseData;
+
+        // 3. Process Avatar upload or delete operations
+        if (state.avatarAction === 'upload' && state.avatarFileToUpload) {
+            const formData = new FormData();
+            formData.append('file', state.avatarFileToUpload);
+            
+            const uploadResponse = await fetch(`/api/contacts/${savedContact.id}/avatar`, {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!uploadResponse.ok) {
+                const uploadData = await uploadResponse.json();
+                showToast(`Saved text details, but photo upload failed: ${uploadData.errors ? uploadData.errors.join(', ') : 'Server error.'}`, 'danger');
+            }
+        } else if (state.avatarAction === 'remove') {
+            const deleteResponse = await fetch(`/api/contacts/${savedContact.id}/avatar`, {
+                method: 'DELETE'
+            });
+            
+            if (!deleteResponse.ok) {
+                const deleteData = await deleteResponse.json();
+                showToast(`Saved text details, but photo deletion failed: ${deleteData.errors ? deleteData.errors.join(', ') : 'Server error.'}`, 'danger');
+            }
+        }
+
         // Success
         closeModal();
         
         const actionMessage = isEdit ? 'Changes saved' : 'Card inserted';
-        showToast(`${actionMessage} for ${responseData.name}`, 'success');
+        showToast(`${actionMessage} for ${savedContact.name}`, 'success');
         
         // Refresh tags cache and contacts deck
         fetchTags();
@@ -1084,6 +1268,7 @@ function showFieldError(inputElement, fieldName, message) {
     }
 }
 
+// Server validation display box
 function showServerFormErrors(errors) {
     formErrorBox.style.display = 'block';
     formErrorList.innerHTML = '';

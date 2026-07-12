@@ -179,6 +179,19 @@
 
                 <h2 id="modal-title" class="modal-main-heading">Catalog Card Form</h2>
 
+                <!-- Avatar Upload Section -->
+                <div class="avatar-upload-section">
+                    <div class="avatar-preview-container">
+                        <div id="modal-avatar-preview" class="modal-avatar-preview monogram-avatar"></div>
+                        <input type="file" id="contact-avatar-file" accept=".jpg,.jpeg,.png,.webp" style="display: none;">
+                    </div>
+                    <div class="avatar-upload-controls">
+                        <button type="button" id="upload-avatar-btn" class="action-btn-outline">Choose Image</button>
+                        <button type="button" id="remove-avatar-btn" class="action-btn-danger" style="display: none;">Remove</button>
+                        <span class="avatar-help-text">JPG, PNG, or WEBP. Max 3MB.</span>
+                    </div>
+                </div>
+
                 <div class="form-group required">
                     <label for="contact-name" class="form-label">Full Name</label>
                     <input type="text" id="contact-name" name="name" class="form-input typewriter" required maxlength="120" placeholder="e.g. Samuel F. B. Morse" autocomplete="off">

@@ -3,12 +3,14 @@ import re
 import json
 import csv
 import io
+import uuid
 from datetime import datetime, timezone, date, timedelta
-from flask import Flask, request, jsonify, render_template, make_response, redirect, url_for, session, g
+from flask import Flask, request, jsonify, render_template, make_response, redirect, url_for, session, g, send_from_directory
 
 # SQLAlchemy database import
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from PIL import Image
 
 app = Flask(
     __name__,
@@ -32,6 +34,25 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-card-catalog-secret-key-1892')
 
 db = SQLAlchemy(app)
+
+# Avatar Upload Folder Configuration
+basedir = os.path.abspath(os.path.dirname(__file__))
+db_url = os.environ.get('SQLITE_DB_PATH') or os.environ.get('DATABASE_URL')
+if db_url and not db_url.startswith('sqlite:///'):
+    persistent_dir = os.path.dirname(os.path.abspath(db_url))
+    AVATAR_UPLOAD_FOLDER = os.path.join(persistent_dir, 'avatars')
+elif os.path.exists('/data'):
+    AVATAR_UPLOAD_FOLDER = '/data/avatars'
+else:
+    AVATAR_UPLOAD_FOLDER = os.path.join(basedir, 'static', 'avatars')
+
+# Ensure directories exist
+os.makedirs(AVATAR_UPLOAD_FOLDER, exist_ok=True)
+
+# Custom static route to serve avatars from persistent directories
+@app.route('/static/avatars/<filename>')
+def serve_avatar(filename):
+    return send_from_directory(AVATAR_UPLOAD_FOLDER, filename)
 
 # Fixed desaturated vintage color palette for index cards tags
 TAG_PALETTE = [
@@ -94,6 +115,7 @@ class Contact(db.Model):
     notes = db.Column(db.Text, nullable=True)
     favorite = db.Column(db.Boolean, default=False, nullable=False)
     birthday = db.Column(db.Date, nullable=True)
+    avatar_url = db.Column(db.String(300), nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -110,6 +132,7 @@ class Contact(db.Model):
             'notes': self.notes or '',
             'favorite': self.favorite,
             'birthday': self.birthday.strftime('%Y-%m-%d') if self.birthday else None,
+            'avatar_url': self.avatar_url,
             'tags': [t.to_dict() for t in self.tags],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
@@ -195,6 +218,13 @@ def migrate_database_schema():
             app.logger.info("Schema migration: Adding birthday column to contacts table.")
             with db.engine.begin() as conn:
                 conn.execute(db.text("ALTER TABLE contacts ADD COLUMN birthday DATE"))
+                
+        # Get updated columns list to check avatar_url
+        columns = [c['name'] for c in inspector.get_columns('contacts')]
+        if 'avatar_url' not in columns:
+            app.logger.info("Schema migration: Adding avatar_url column to contacts table.")
+            with db.engine.begin() as conn:
+                conn.execute(db.text("ALTER TABLE contacts ADD COLUMN avatar_url VARCHAR(300)"))
     except Exception as e:
         app.logger.error(f"Error during schema migration: {e}")
 
@@ -230,6 +260,21 @@ def calculate_upcoming_birthdays(user_id):
             
     upcoming.sort(key=lambda x: x[1])
     return [c.to_dict() for c, days in upcoming]
+
+# Helper to delete avatar file from disk
+def delete_avatar_file(avatar_url):
+    if not avatar_url:
+        return
+    prefix = '/static/avatars/'
+    if avatar_url.startswith(prefix):
+        filename = avatar_url[len(prefix):]
+        file_path = os.path.join(AVATAR_UPLOAD_FOLDER, filename)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                app.logger.info(f"Deleted avatar file: {file_path}")
+            except Exception as e:
+                app.logger.error(f"Error deleting avatar file {file_path}: {e}")
 
 # One-time migration function
 def migrate_if_needed():
@@ -612,6 +657,9 @@ def delete_contact(contact_id):
     if not contact:
         return jsonify({"errors": ["Contact not found."]}), 404
     
+    if contact.avatar_url:
+        delete_avatar_file(contact.avatar_url)
+        
     db.session.delete(contact)
     db.session.commit()
     return jsonify({"message": "Contact deleted successfully."})
@@ -628,6 +676,90 @@ def toggle_favorite(contact_id):
     
     return jsonify(contact.to_dict())
 
+# Custom upload/delete REST routes for avatars
+@app.route('/api/contacts/<int:contact_id>/avatar', methods=['POST'])
+def upload_avatar(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found."]}), 404
+        
+    if 'file' not in request.files:
+        return jsonify({"errors": ["No file part in the request."]}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"errors": ["No selected file."]}), 400
+        
+    # Check extension
+    filename = file.filename
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ['.jpg', '.jpeg', '.png', '.webp']:
+        return jsonify({"errors": ["Invalid file type. Only JPG, PNG, and WEBP are allowed."]}), 400
+        
+    # Check file size (max 3MB)
+    try:
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
+        if file_size > 3 * 1024 * 1024:
+            return jsonify({"errors": ["File size exceeds 3MB limit."]}), 400
+    except Exception as e:
+        return jsonify({"errors": [f"Error checking file size: {e}"]}), 400
+        
+    # Process with Pillow
+    try:
+        img = Image.open(file.stream)
+        
+        # Convert RGBA to RGB if JPEG
+        if ext in ['.jpg', '.jpeg'] and img.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+            
+        # Resize to max 400x400
+        img.thumbnail((400, 400))
+        
+        # Generate unique filename using UUID
+        unique_hash = uuid.uuid4().hex[:8]
+        sanitized_ext = '.jpg' if ext in ['.jpg', '.jpeg'] else ext
+        new_filename = f"avatar_{contact_id}_{unique_hash}{sanitized_ext}"
+        
+        # Ensure folder exists
+        os.makedirs(AVATAR_UPLOAD_FOLDER, exist_ok=True)
+        
+        save_path = os.path.join(AVATAR_UPLOAD_FOLDER, new_filename)
+        img.save(save_path)
+        
+        # Delete old avatar file
+        old_avatar = contact.avatar_url
+        if old_avatar:
+            delete_avatar_file(old_avatar)
+            
+        contact.avatar_url = f"/static/avatars/{new_filename}"
+        contact.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+        
+        return jsonify(contact.to_dict()), 200
+    except Exception as e:
+        app.logger.error(f"Image processing failed: {e}")
+        return jsonify({"errors": [f"Image processing failed: {str(e)}"]}), 500
+
+
+@app.route('/api/contacts/<int:contact_id>/avatar', methods=['DELETE'])
+def remove_avatar(contact_id):
+    contact = Contact.query.filter_by(id=contact_id, user_id=g.user.id).first()
+    if not contact:
+        return jsonify({"errors": ["Contact not found."]}), 404
+        
+    if contact.avatar_url:
+        delete_avatar_file(contact.avatar_url)
+        contact.avatar_url = None
+        contact.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+        
+    return jsonify(contact.to_dict()), 200
+
+
 @app.route('/api/contacts/bulk-delete', methods=['POST'])
 def bulk_delete_contacts():
     data = request.get_json() or {}
@@ -638,6 +770,8 @@ def bulk_delete_contacts():
     contacts = Contact.query.filter(Contact.id.in_(ids), Contact.user_id == g.user.id).all()
     count = len(contacts)
     for c in contacts:
+        if c.avatar_url:
+            delete_avatar_file(c.avatar_url)
         db.session.delete(c)
     db.session.commit()
     

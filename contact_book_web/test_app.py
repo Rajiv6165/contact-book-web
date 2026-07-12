@@ -437,5 +437,98 @@ class ContactBookTestCase(unittest.TestCase):
         self.assertIn('Charlie', csv_data)
         self.assertNotIn('Bob', csv_data)
 
+    def test_avatar_upload_validations(self):
+        # Create a contact
+        contact_json = self.client.post('/api/contacts', json={"name": "Photo User"}).get_json()
+        c_id = contact_json['id']
+        
+        # Test 1: Upload non-image file type (should fail)
+        data = {
+            'file': (io.BytesIO(b"dummy text content"), "test.txt")
+        }
+        response = self.client.post(
+            f'/api/contacts/{c_id}/avatar',
+            data=data,
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid file type", json.loads(response.data)['errors'][0])
+        
+        # Test 2: Upload oversized image (> 3MB) (should fail)
+        large_content = b"0" * (3 * 1024 * 1024 + 100) # just over 3MB of raw bytes
+        data = {
+            'file': (io.BytesIO(large_content), "large.png")
+        }
+        response = self.client.post(
+            f'/api/contacts/{c_id}/avatar',
+            data=data,
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("File size exceeds 3MB limit", json.loads(response.data)['errors'][0])
+
+        # Test 3: Upload valid image and verify resizing + saving
+        from PIL import Image
+        img_io = io.BytesIO()
+        # Create a large image to test resizing
+        img = Image.new('RGB', (600, 600), color='blue')
+        img.save(img_io, 'PNG')
+        img_io.seek(0)
+        
+        data = {
+            'file': (img_io, "valid.png")
+        }
+        response = self.client.post(
+            f'/api/contacts/{c_id}/avatar',
+            data=data,
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 200)
+        res_data = json.loads(response.data)
+        self.assertTrue(res_data['avatar_url'].startswith('/static/avatars/'))
+        
+        # Check that file exists on disk
+        from app import AVATAR_UPLOAD_FOLDER
+        filename = res_data['avatar_url'].split('/')[-1]
+        saved_path = os.path.join(AVATAR_UPLOAD_FOLDER, filename)
+        self.assertTrue(os.path.exists(saved_path))
+        
+        # Check that saved image is resized to <= 400x400
+        with Image.open(saved_path) as saved_img:
+            self.assertTrue(saved_img.size[0] <= 400)
+            self.assertTrue(saved_img.size[1] <= 400)
+
+        # Test 4: Replace avatar and confirm old file is deleted
+        old_path = saved_path
+        
+        img_io2 = io.BytesIO()
+        img2 = Image.new('RGB', (100, 100), color='green')
+        img2.save(img_io2, 'JPEG')
+        img_io2.seek(0)
+        
+        data2 = {
+            'file': (img_io2, "valid2.jpg")
+        }
+        response2 = self.client.post(
+            f'/api/contacts/{c_id}/avatar',
+            data=data2,
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response2.status_code, 200)
+        res_data2 = json.loads(response2.data)
+        
+        # Verify old file is deleted from disk
+        self.assertFalse(os.path.exists(old_path))
+        
+        # Verify new file exists on disk
+        filename2 = res_data2['avatar_url'].split('/')[-1]
+        saved_path2 = os.path.join(AVATAR_UPLOAD_FOLDER, filename2)
+        self.assertTrue(os.path.exists(saved_path2))
+
+        # Test 5: Delete contact and confirm file is deleted
+        delete_response = self.client.delete(f'/api/contacts/{c_id}')
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertFalse(os.path.exists(saved_path2))
+
 if __name__ == '__main__':
     unittest.main()
